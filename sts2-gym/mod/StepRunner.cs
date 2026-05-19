@@ -141,42 +141,75 @@ internal static class StepRunner
             return (409, "{\"ok\":false,\"error\":\"card not playable\",\"card_id\":" + JsonStr(card.Id.Entry) +
                 ",\"unplayable_reason\":\"" + unplayableReason + "\"}");
         }
-        if (target != null && !card.CanPlayTargeting(target))
+        if (!card.CanPlayTargeting(target))
         {
-            return (409, "{\"ok\":false,\"error\":\"card cannot target given creature\",\"card_id\":" + JsonStr(card.Id.Entry) +
-                ",\"target_combat_id\":" + target.CombatId + "}");
+            // Covers both targeted-card-with-bad-target AND targetless-card-with-target.
+            return (409, "{\"ok\":false,\"error\":\"card cannot be played against this target\",\"card_id\":" + JsonStr(card.Id.Entry) +
+                ",\"target_combat_id\":" + (target?.CombatId.ToString() ?? "null") +
+                ",\"card_target_type\":\"" + card.TargetType + "\"}");
         }
 
         // ----- dispatch -----
         Log.Info($"{Tag} play_card: {card.Id.Entry} (idx={cardIdx})" +
                  (target != null ? $" target={target.CombatId}({target.Monster?.Id.Entry ?? "player"})" : " (no target)"));
 
-        var ctx = new BlockingPlayerChoiceContext();
         var roundBefore = combat.RoundNumber;
         var sideBefore = combat.CurrentSide;
         var hpBefore = player.Creature.CurrentHp;
+        var energyBefore = pcs.Energy;
 
+        // CRITICAL: use TryManualPlay (the player-input path) rather than
+        // CardCmd.AutoPlay. AutoPlay is for triggered/free plays — it sets
+        // EnergySpent=0 and does NOT deduct energy (used by WhisperingEarring
+        // relic, KnifeTrap card effect, SlyDiscard mechanic, etc.). The agent
+        // hitting it as a stand-in for "click to play" produced the
+        // free-energy bug observed in Day-5 first acceptance test:
+        // 8 cards in round 2 with energy=3 max.
+        //
+        // TryManualPlay does the full pipeline:
+        //   CanPlayTargeting check -> EnqueueManualPlay
+        //     -> RunManager.Instance.ActionQueueSynchronizer.RequestEnqueue(PlayCardAction)
+        //         -> ActionExecutor picks it up async -> OnPlayWrapper(isAutoPlay:false)
+        //             -> SpendResources (deducts energy + stars correctly)
+        bool played;
         try
         {
-            await CardCmd.AutoPlay(ctx, card, target);
+            played = card.TryManualPlay(target);
         }
         catch (Exception ex)
         {
-            Log.Error($"{Tag} CardCmd.AutoPlay threw: {ex}");
-            return (500, "{\"ok\":false,\"error\":\"CardCmd.AutoPlay threw\",\"message\":" + JsonStr(ex.Message) + "}");
+            Log.Error($"{Tag} TryManualPlay threw: {ex}");
+            return (500, "{\"ok\":false,\"error\":\"TryManualPlay threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+        if (!played)
+        {
+            return (409, "{\"ok\":false,\"error\":\"TryManualPlay returned false\",\"card_id\":" + JsonStr(card.Id.Entry) + "}");
         }
 
-        // dev plan §2.3 关键不变量: wait for state to stabilize before returning.
-        // We give a small grace window for any post-play chain reactions to settle.
-        // The game's own animation queue is the source of truth here.
-        await WaitForStableAsync();
+        // dev plan §2.3 sync invariant: wait for queue to drain — TryManualPlay
+        // enqueues PlayCardAction asynchronously, so we await its completion
+        // via the game's own sync primitive: ActionQueueSet.BecameEmpty() Task.
+        var aqs = RunManager.Instance.ActionQueueSet;
+        if (aqs != null)
+        {
+            try
+            {
+                await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            catch (TimeoutException)
+            {
+                Log.Warn($"{Tag} ActionQueueSet.BecameEmpty timed out after 10s — combat may be stuck");
+                // Don't fail the step — let the client decide via /observe
+            }
+        }
 
-        // Refresh observation cache so next /observe sees the fresh state.
+        // Refresh observation cache so next /observe sees the post-play state.
         HttpBridge.RefreshObservation();
 
         var combatAfter = CombatManager.Instance.DebugOnlyGetState();
         var roundAfter = combatAfter?.RoundNumber ?? roundBefore;
         var hpAfter = player.Creature.CurrentHp;
+        var energyAfter = pcs.Energy;
         var stillInCombat = CombatManager.Instance.IsInProgress;
 
         var sb = new StringBuilder(256);
@@ -187,6 +220,9 @@ internal static class StepRunner
         sb.Append(",\"round_after\":").Append(roundAfter);
         sb.Append(",\"side_before\":\"").Append(sideBefore).Append('"');
         sb.Append(",\"hp_delta\":").Append(hpAfter - hpBefore);
+        sb.Append(",\"energy_before\":").Append(energyBefore);
+        sb.Append(",\"energy_after\":").Append(energyAfter);
+        sb.Append(",\"energy_delta\":").Append(energyAfter - energyBefore);
         sb.Append(",\"still_in_combat\":").Append(stillInCombat ? "true" : "false");
         sb.Append(",\"is_play_phase\":").Append(CombatManager.Instance.IsPlayPhase ? "true" : "false");
         sb.Append('}');
@@ -214,27 +250,6 @@ internal static class StepRunner
         PlayerCmd.EndTurn(player, canBackOut: false);
 
         return (200, "{\"ok\":true,\"action\":\"end_turn\",\"round_before\":" + roundBefore + "}");
-    }
-
-    // -------------------------- sync helpers --------------------------
-
-    /// <summary>
-    /// Wait for game state to look "stable" after an action. Heuristic:
-    /// the action chain is settled when we're either out of combat, in
-    /// enemy turn, or back in play phase after no animation-in-flight signal.
-    ///
-    /// Day-5 minimal: a bounded short sleep (~100 ms) after the await on
-    /// CardCmd.AutoPlay. AutoPlay already awaits its internal animation
-    /// chain, so by the time await returns the state is close to stable.
-    /// The extra sleep absorbs the last bit of animation queue drain.
-    ///
-    /// Day-6+ may upgrade this to an event-driven `TaskCompletionSource`
-    /// bound to `CombatManager.PlayerActionsDisabledChanged` (the canonical
-    /// "input lock released" signal — recon task C found it).
-    /// </summary>
-    private static async Task WaitForStableAsync()
-    {
-        await Task.Delay(150);
     }
 
     // -------------------------- helpers --------------------------
