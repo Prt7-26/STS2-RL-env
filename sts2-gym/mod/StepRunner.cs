@@ -58,7 +58,14 @@ internal static class StepRunner
 
         try
         {
-            return await DispatchAsync(cmd);
+            // Day-5.1: marshal DispatchAsync onto Godot main thread before
+            // touching CardCmd / PlayerCmd. Without this, DISMANTLE and a few
+            // other cards trigger
+            //     "Changing the name to nodes inside the SceneTree is only
+            //      allowed from the main thread."
+            // which corrupts scene tree state and can wedge the combat phase
+            // transition (TurnStarted may stop firing).
+            return await GameThread.RunOnMainAsync(() => DispatchAsync(cmd));
         }
         catch (Exception ex)
         {
