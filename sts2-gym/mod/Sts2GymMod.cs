@@ -31,8 +31,14 @@ public static class Sts2GymMod
             CombatManager.Instance.CombatSetUp += OnCombatSetUp;
             CombatManager.Instance.TurnStarted += OnTurnStarted;
             CombatManager.Instance.TurnEnded += OnTurnEnded;
+            // PlayerActionsDisabledChanged fires AFTER the game's in-frame
+            // "new turn" routine completes (energy reset + initial draw + buff
+            // ticks). TurnStarted fires BEFORE that routine, so snapshots taken
+            // there are stale (energy=0, hand=0 at start of new turn). Subscribing
+            // to both gives us a fresh snapshot at the moment the player can act.
+            CombatManager.Instance.PlayerActionsDisabledChanged += OnPlayerActionsDisabledChanged;
 
-            Log.Info($"{LogTag} subscriptions: RunStarted, CombatSetUp, TurnStarted, TurnEnded");
+            Log.Info($"{LogTag} subscriptions: RunStarted, CombatSetUp, TurnStarted, TurnEnded, PlayerActionsDisabledChanged");
 
             // Day-3 P0 milestone: start the HTTP bridge so Python side can probe state.
             // HttpListener does NOT depend on Godot scene tree, safe to start in ExecuteVeryEarly.
@@ -110,6 +116,22 @@ public static class Sts2GymMod
         catch (Exception ex)
         {
             Log.Error($"{LogTag} OnTurnEnded exception: {ex}");
+        }
+    }
+
+    static void OnPlayerActionsDisabledChanged(CombatState s)
+    {
+        try
+        {
+            // Refresh whenever the input-lock toggles — this is the canonical
+            // "player can act / can't act" signal, fires AFTER the turn-start
+            // routine (energy reset, hand draw, buff ticks) so snapshots taken
+            // here reflect what the player actually sees.
+            HttpBridge.RefreshObservation();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"{LogTag} OnPlayerActionsDisabledChanged exception: {ex}");
         }
     }
 }

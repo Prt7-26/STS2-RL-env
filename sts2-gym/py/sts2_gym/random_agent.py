@@ -164,8 +164,15 @@ def run_one_combat(
         turns_observed += 1
         if action["type"] == "play_card":
             cards_played += 1
-            if verbose and resp.get("hp_delta") != 0:
-                print(f"[agent]     hp_delta={resp.get('hp_delta')}")
+            if verbose:
+                # Always-show energy_after now that TryManualPlay properly deducts.
+                bits = []
+                if resp.get("energy_after") is not None:
+                    bits.append(f"energy {resp.get('energy_before')}->{resp.get('energy_after')}")
+                if resp.get("hp_delta") != 0:
+                    bits.append(f"hp_delta={resp.get('hp_delta')}")
+                if bits:
+                    print(f"[agent]     {' '.join(bits)}")
         elif action["type"] == "end_turn":
             end_turns += 1
 
