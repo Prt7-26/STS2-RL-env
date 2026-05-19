@@ -67,12 +67,31 @@ STS2_INSTALL=/custom/path ./sts2-gym/scripts/smoke_test.sh
 
 ```bash
 STS2="$HOME/Library/Application Support/Steam/steamapps/common/Slay the Spire 2"
-mkdir -p "$STS2/mods/sts2gym"
-cp sts2-gym/mod/sts2gym.json "$STS2/mods/sts2gym/"
-cp sts2-gym/mod/bin/Release/sts2gym.dll "$STS2/mods/sts2gym/"
+# IMPORTANT: on macOS the mod dir must be INSIDE the .app bundle, next to the
+# game binary. Godot's OS.GetExecutablePath() returns Contents/MacOS/<binary>,
+# and ModManager.Initialize scans <dirname-of-executable>/mods/.
+MOD_DIR="$STS2/SlayTheSpire2.app/Contents/MacOS/mods/sts2gym"
+mkdir -p "$MOD_DIR"
+cp sts2-gym/mod/sts2gym.json "$MOD_DIR/"
+cp sts2-gym/mod/bin/Release/sts2gym.dll "$MOD_DIR/"
 ```
 
 The manifest file name is flexible (any `*.json` in the mod dir is parsed), but the DLL filename **must** be `<manifest.id>.dll` — i.e. `sts2gym.dll`.
+
+### macOS path caveats
+
+- **The mod must live inside the signed .app bundle** (`Contents/MacOS/mods/`), not at the install root. Putting it at `<install>/mods/` silently fails — `ModManager` doesn't even log "no mods found", it just leaves `_mods.Count == 0` and returns early.
+- **Steam may re-validate / re-download the .app bundle on update**, which would wipe `Contents/MacOS/mods/`. If you find your mod missing after a game update, just re-run `smoke_test.sh`.
+- **macOS Gatekeeper / code signing**: putting files inside a signed bundle does not always invalidate the signature for ad-hoc launches via Steam, but if you ever see "app is damaged and can't be opened" after deploying, the workaround is `xattr -dr com.apple.quarantine "$STS2/SlayTheSpire2.app"`.
+
+### STS2 log location (macOS)
+
+```
+~/Library/Application Support/SlayTheSpire2/logs/godot.log         # current
+~/Library/Application Support/SlayTheSpire2/logs/godot<UTC-stamp>.log  # historical
+```
+
+The current run writes to `godot.log` (overwritten each launch) and also rotates a timestamped copy. `smoke_test.sh` tails whichever was most recently modified.
 
 ### First-launch checklist
 

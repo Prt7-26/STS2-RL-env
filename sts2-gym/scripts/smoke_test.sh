@@ -16,7 +16,15 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 MOD_SRC="$SCRIPT_DIR/../mod"
 STS2_INSTALL="${STS2_INSTALL:-$HOME/Library/Application Support/Steam/steamapps/common/Slay the Spire 2}"
-MOD_DST="$STS2_INSTALL/mods/sts2gym"
+
+# IMPORTANT (macOS): ModManager.Initialize uses Godot's OS.GetExecutablePath() which on
+# macOS returns the binary inside the .app bundle, so mods/ must live at
+# Contents/MacOS/mods/ (next to the actual executable), NOT at the install root.
+MOD_DST="$STS2_INSTALL/SlayTheSpire2.app/Contents/MacOS/mods/sts2gym"
+
+# STS2 user-data dir (Godot writes logs here on macOS):
+USER_DATA="${STS2_USER_DATA:-$HOME/Library/Application Support/SlayTheSpire2}"
+SETTINGS_GLOB="$USER_DATA/steam/*/settings.save"
 
 # ---------- pretty output ----------
 red()    { printf '\033[1;31m%s\033[0m\n' "$*"; }
@@ -67,8 +75,10 @@ read -rp "  Press [Enter] once STS2 is launching (or Ctrl-C to abort): " _
 # ---------- find the active log file ----------
 step "Searching for the active log file (poll up to ~30s)"
 
-# Candidate dirs in order of likelihood (Godot default + game-specific + Steam paths).
+# Candidate dirs in order of likelihood (verified path first, then fallbacks).
 LOG_DIRS=(
+    "$USER_DATA/logs"
+    "$HOME/Library/Application Support/Godot/app_userdata/SlayTheSpire2/logs"
     "$HOME/Library/Application Support/Godot/app_userdata"
     "$HOME/Library/Application Support/Slay the Spire 2"
     "$HOME/Library/Logs/Slay the Spire 2"
