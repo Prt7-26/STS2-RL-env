@@ -166,9 +166,10 @@ class ModBridgeClient:
         *,
         encounter: str | None = None,
         rng_counters: dict[str, Any] | None = None,
+        player_snapshot: dict[str, Any] | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
-        """POST a scenario reset (dev plan §2.2 Combat-level — Day-6 Level-A).
+        """POST a scenario reset (dev plan §2.2 Combat-level — Day-6.1).
 
         Parameters
         ----------
@@ -181,17 +182,27 @@ class ModBridgeClient:
                 {"seed": "MYSEED", "counters": {"shuffle": 12, "combat_targets": 7, ...}}
             The seed must match the current run's seed (RunRngSet doesn't support
             mid-run reseed; server returns 400 on mismatch).
+        player_snapshot :
+            If set, restore the full Player state (HP, deck, relics, potions,
+            PlayerRng, RelicGrabBag, discovered-content lists) via the game's
+            Player.SyncWithSerializedPlayer API. Pass the raw object from
+            /observe.run.players[i] — schema is guaranteed round-trip compatible.
+
+        Apply order on the server: player_snapshot → rng_counters → encounter.
 
         Returns
         -------
         Server response body. On success:
-            {"ok": true, "rng_restored"?: true, "encounter"?: str, "phase_after"?: str}
+            {"ok": true, "player_restored"?: true, "rng_restored"?: true,
+             "encounter"?: str, "phase_after"?: str}
         """
         payload: dict[str, Any] = {}
         if encounter is not None:
             payload["encounter"] = encounter
         if rng_counters is not None:
             payload["rng_counters"] = rng_counters
+        if player_snapshot is not None:
+            payload["player_snapshot"] = player_snapshot
         return self._post_json("/reset", payload, timeout=timeout)
 
     def snapshot_run_rng(self) -> dict[str, Any]:
@@ -204,6 +215,22 @@ class ModBridgeClient:
         rng = run.get("rng") or {}
         # /observe gives {"seed": str, "counters": {...}} — same shape /reset wants.
         return {"seed": rng.get("seed"), "counters": rng.get("counters") or {}}
+
+    def snapshot_player(self, player_index: int = 0) -> dict[str, Any]:
+        """Return the player's full SerializablePlayer snapshot from /observe.
+
+        The returned dict is directly round-trip compatible with /reset's
+        ``player_snapshot`` parameter — the game's source-generated JSON
+        context handles both directions of (de)serialization.
+        """
+        obs = self.observe()
+        run = obs.get("run") or {}
+        players = run.get("players") or []
+        if not players:
+            raise RuntimeError("no players in /observe.run — is the game actually in a run?")
+        if player_index >= len(players):
+            raise IndexError(f"player_index={player_index} out of range (have {len(players)} players)")
+        return players[player_index]
 
     # ---------- utilities ----------
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -10,6 +11,7 @@ using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Saves.Runs;
 
 namespace Sts2Gym;
@@ -42,16 +44,22 @@ internal static class ScenarioInjector
 
     /// <summary>
     /// Entry point: parse a JSON scenario request and apply it.
-    /// Body schema (Day-6 Level-A):
+    /// Body schema (Day-6.1):
     ///   {
-    ///     "encounter": "EXOSKELETONS_WEAK",       // optional — jump to this encounter
-    ///     "rng_counters": {                        // optional — restore RunRngSet state
-    ///       "seed": "MYSEED",                      // must match current run.rng.seed (no
-    ///                                              // mid-run reseed; LoadFromSerializable
-    ///                                              // throws on seed mismatch)
-    ///       "counters": { "shuffle": 12, "combat_targets": 7, ... }
-    ///     }
+    ///     "encounter": "EXOSKELETONS_WEAK",        // optional — jump to this encounter
+    ///     "rng_counters": {                         // optional — restore RunRngSet state
+    ///       "seed": "MYSEED",                       // must match current run.rng.seed
+    ///       "counters": { "shuffle": 12, ... }
+    ///     },
+    ///     "player_snapshot": { ... SerializablePlayer JSON ... }  // optional — restores
+    ///                                                              // HP/deck/relics/potions/
+    ///                                                              // PlayerRng/RelicGrabBag
     ///   }
+    ///
+    /// Apply order: player_snapshot → RunRngSet restore → encounter jump.
+    /// This order matters for determinism: SyncWithSerializedPlayer internally
+    /// calls PlayerRng.LoadFromSerializable, so applying it first ensures PlayerRng
+    /// is restored before any encounter-generation RNG draws happen.
     /// </summary>
     public static async Task<(int status, string body)> ApplyAsync(JsonElement cmd)
     {
@@ -70,15 +78,31 @@ internal static class ScenarioInjector
         JsonElement rngBlock = default;
         var hasRng = cmd.TryGetProperty("rng_counters", out rngBlock) && rngBlock.ValueKind == JsonValueKind.Object;
 
-        if (encounterName == null && !hasRng)
+        JsonElement playerBlock = default;
+        var hasPlayer = cmd.TryGetProperty("player_snapshot", out playerBlock) && playerBlock.ValueKind == JsonValueKind.Object;
+
+        if (encounterName == null && !hasRng && !hasPlayer)
         {
-            return (400, "{\"ok\":false,\"error\":\"empty scenario — provide at least 'encounter' or 'rng_counters'\"}");
+            return (400, "{\"ok\":false,\"error\":\"empty scenario — provide at least 'encounter', 'rng_counters', or 'player_snapshot'\"}");
         }
 
-        var sb = new StringBuilder(256);
+        var sb = new StringBuilder(512);
         sb.Append("{\"ok\":true");
 
-        // ---------- 1) restore RunRngSet if requested (BEFORE encounter so the
+        // ---------- 1) restore player state if requested.
+        //              SyncWithSerializedPlayer restores HP / Deck / Relics / Potions /
+        //              PlayerRng / PlayerOdds / RelicGrabBag / discovered-content lists.
+        //              This is the missing piece that Day-6 first-pass /reset lacked —
+        //              previously HP and deck composition leaked between determinism
+        //              passes, breaking trajectory hash equality.
+        if (hasPlayer)
+        {
+            var playerError = TryRestorePlayer(playerBlock);
+            if (playerError != null) return (400, playerError);
+            sb.Append(",\"player_restored\":true");
+        }
+
+        // ---------- 2) restore RunRngSet if requested (BEFORE encounter so the
         //              encounter's first-time monster generation uses the
         //              restored RNG state, dev plan §2.5)
         if (hasRng)
@@ -88,7 +112,7 @@ internal static class ScenarioInjector
             sb.Append(",\"rng_restored\":true");
         }
 
-        // ---------- 2) jump to encounter
+        // ---------- 3) jump to encounter
         if (encounterName != null)
         {
             try
@@ -138,6 +162,56 @@ internal static class ScenarioInjector
 
         sb.Append('}');
         return (200, sb.ToString());
+    }
+
+    /// <summary>
+    /// Restore Player full state from a SerializablePlayer JSON block. Returns
+    /// null on success, or a JSON error body on failure.
+    ///
+    /// Internally uses Player.SyncWithSerializedPlayer — the game's own multiplayer-
+    /// sync method that restores HP / MaxHp / MaxEnergy / Gold / MaxPotionCount /
+    /// Deck / Relics / Potions / PlayerRng / PlayerOdds / RelicGrabBag / Discovered*.
+    /// </summary>
+    private static string? TryRestorePlayer(JsonElement playerBlock)
+    {
+        var runState = RunManager.Instance.DebugOnlyGetState();
+        if (runState == null) return "{\"ok\":false,\"error\":\"runState null\"}";
+
+        // Deserialize via the game's source-generated JSON context. Same path
+        // /observe uses (in reverse), so format compatibility is guaranteed when
+        // the client just round-trips run.players[0] back to us.
+        SerializablePlayer? snap;
+        try
+        {
+            snap = JsonSerializer.Deserialize(
+                playerBlock.GetRawText(),
+                JsonSerializationUtility.GetTypeInfo<SerializablePlayer>());
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"error\":\"player_snapshot deserialization failed\",\"message\":" + JsonStr(ex.Message) + "}";
+        }
+        if (snap == null)
+        {
+            return "{\"ok\":false,\"error\":\"player_snapshot deserialized to null\"}";
+        }
+
+        var player = runState.Players.FirstOrDefault(p => p.NetId == snap.NetId);
+        if (player == null)
+        {
+            return "{\"ok\":false,\"error\":\"player_snapshot.NetId not found in current run\",\"net_id\":" + snap.NetId + "}";
+        }
+
+        try
+        {
+            player.SyncWithSerializedPlayer(snap);
+            Log.Info($"{Tag} restored player NetId={snap.NetId}: hp={snap.CurrentHp}/{snap.MaxHp} deck={snap.Deck.Count} relics={snap.Relics.Count}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"error\":\"SyncWithSerializedPlayer threw\",\"message\":" + JsonStr(ex.Message) + "}";
+        }
     }
 
     /// <summary>

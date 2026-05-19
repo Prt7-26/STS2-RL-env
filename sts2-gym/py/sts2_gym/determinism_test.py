@@ -96,14 +96,20 @@ def _normalize_obs_for_trajectory(obs: dict[str, Any]) -> dict[str, Any]:
 def _run_one_pass(
     c: ModBridgeClient,
     rng_counters_snapshot: dict[str, Any],
+    player_snapshot: dict[str, Any],
     encounter: str,
     agent_seed: int,
     max_turns: int,
 ) -> list[dict[str, Any]]:
-    """One determinism-test pass: reset, run agent, return trajectory."""
-    print(f"  /reset rng+encounter={encounter}", end="", flush=True)
-    resp = c.reset(encounter=encounter, rng_counters=rng_counters_snapshot)
-    print(f" -> ok={resp.get('ok')} phase_after={resp.get('phase_after')}")
+    """One determinism-test pass: reset (player+rng+encounter), run agent, return trajectory."""
+    print(f"  /reset player+rng+encounter={encounter}", end="", flush=True)
+    resp = c.reset(
+        encounter=encounter,
+        rng_counters=rng_counters_snapshot,
+        player_snapshot=player_snapshot,
+    )
+    print(f" -> ok={resp.get('ok')} player_restored={resp.get('player_restored')} "
+          f"rng_restored={resp.get('rng_restored')} phase_after={resp.get('phase_after')}")
 
     # Wait for combat to actually start.
     deadline = time.monotonic() + 10.0
@@ -173,24 +179,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[det] not in a run (phase={obs0.get('phase')!r}). Start a run first.")
         return 1
 
-    # Snapshot current RNG state (we'll restore this before each pass).
+    # Snapshot full restorable state (we'll restore this before each pass).
+    # Day-6.1: includes player state (HP/deck/relics/PlayerRng) — without it,
+    # combat damage and deck changes leak between passes and break determinism.
     rng_snapshot = c.snapshot_run_rng()
+    player_snapshot = c.snapshot_player()
     encounter = args.encounter or (obs0.get("combat") or {}).get("encounter")
     if encounter is None:
         print("[det] no --encounter given and not currently in a combat — please pass --encounter <ID>")
         return 1
     print(f"[det] encounter={encounter!r} run_rng_seed={rng_snapshot.get('seed')!r} "
           f"rng_streams={len(rng_snapshot.get('counters') or {})}")
+    print(f"[det] player snapshot: net_id={player_snapshot.get('net_id')} "
+          f"hp={player_snapshot.get('current_hp')}/{player_snapshot.get('max_hp')} "
+          f"deck={len(player_snapshot.get('deck') or [])} "
+          f"relics={len(player_snapshot.get('relics') or [])}")
     print()
 
     print("[det] === pass A ===")
-    traj_a = _run_one_pass(c, rng_snapshot, encounter, args.seed, args.max_turns)
+    traj_a = _run_one_pass(c, rng_snapshot, player_snapshot, encounter, args.seed, args.max_turns)
     hash_a, _ = _trajectory_hash(traj_a)
     print(f"[det]   trajectory: {len(traj_a)} steps, sha256 = {hash_a[:16]}…")
     print()
 
     print("[det] === pass B ===")
-    traj_b = _run_one_pass(c, rng_snapshot, encounter, args.seed, args.max_turns)
+    traj_b = _run_one_pass(c, rng_snapshot, player_snapshot, encounter, args.seed, args.max_turns)
     hash_b, _ = _trajectory_hash(traj_b)
     print(f"[det]   trajectory: {len(traj_b)} steps, sha256 = {hash_b[:16]}…")
     print()
