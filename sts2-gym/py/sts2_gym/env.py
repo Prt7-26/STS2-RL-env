@@ -171,8 +171,17 @@ def build_action_mask(mask_payload: dict[str, Any], combat: dict[str, Any]) -> n
     return mask
 
 
-def encode_observation(obs_payload: dict[str, Any]) -> dict[str, np.ndarray]:
-    """Pure function: bridge /observe payload → tensor dict matching observation_space."""
+def encode_observation(
+    obs_payload: dict[str, Any],
+    registry: "Registry | None" = None,
+) -> dict[str, np.ndarray]:
+    """Bridge /observe payload → tensor dict matching observation_space.
+
+    Day-9.3: if a Registry is supplied, hand / selector_options gain a
+    ``card_idx`` column and enemies gain a ``monster_idx`` column. Without a
+    registry (legacy path / unit tests), those columns are filled with
+    UNKNOWN_IDX=0 — agent sees structurally-correct but identity-less data.
+    """
     in_combat = 1 if obs_payload.get("phase") == "combat" and obs_payload.get("combat") else 0
     combat = obs_payload.get("combat") or {}
     players = combat.get("players") or [{}]
@@ -196,7 +205,8 @@ def encode_observation(obs_payload: dict[str, Any]) -> dict[str, np.ndarray]:
     )
 
     enemies = _canonical_enemies(combat)
-    enemies_arr = np.full((ENEMY_MAX, 6), -1, dtype=np.int32)
+    # Day-9.3: enemies shape (ENEMY_MAX, 7) — last column is monster_idx.
+    enemies_arr = np.full((ENEMY_MAX, 7), -1, dtype=np.int32)
     for i, e in enumerate(enemies[:ENEMY_MAX]):
         intent_dmg = -1
         nm = e.get("next_move") or {}
@@ -204,6 +214,7 @@ def encode_observation(obs_payload: dict[str, Any]) -> dict[str, np.ndarray]:
             if intent.get("type") == "Attack":
                 intent_dmg = max(intent_dmg, int(intent.get("total_damage", -1) or -1))
                 break
+        monster_idx = registry.monster_idx(e.get("monster_id")) if registry else 0
         enemies_arr[i] = [
             1 if e.get("is_alive") else 0,
             1 if e.get("is_hittable") else 0,
@@ -211,15 +222,19 @@ def encode_observation(obs_payload: dict[str, Any]) -> dict[str, np.ndarray]:
             int(e.get("max_hp") or 0),
             int(e.get("block") or 0),
             intent_dmg,
+            monster_idx,
         ]
 
-    hand_arr = np.full((HAND_MAX, 4), -1, dtype=np.int32)
+    # Day-9.3: hand shape (HAND_MAX, 5) — last column is card_idx.
+    hand_arr = np.full((HAND_MAX, 5), -1, dtype=np.int32)
     for i, card in enumerate((p0.get("hand") or [])[:HAND_MAX]):
+        card_idx = registry.card_idx(card.get("id")) if registry else 0
         hand_arr[i] = [
             1,  # present
             int(card.get("cost") if card.get("cost") is not None else -1),
             1 if card.get("can_play") else 0,
             TARGET_TYPE_TO_IDX.get(card.get("target_type", ""), 0),
+            card_idx,
         ]
 
     counts = np.array(
@@ -233,20 +248,19 @@ def encode_observation(obs_payload: dict[str, Any]) -> dict[str, np.ndarray]:
         dtype=np.int32,
     )
 
-    # Day-8.1: selector context. selector_active=1 means the engine is blocked
-    # waiting on an ICardSelector pick; play_card / end_turn are illegal until
-    # resolved. selector_options[k] = [present, cost, is_upgraded, target_type_idx]
-    # mirroring the hand encoding so the policy can share weights if it wants to.
+    # Day-8.1 + Day-9.3: selector_options shape (SELECTOR_MAX, 5).
     selector = obs_payload.get("selector") or {}
     selector_active_int = 1 if selector.get("active") else 0
-    selector_options = np.full((SELECTOR_MAX, 4), -1, dtype=np.int32)
+    selector_options = np.full((SELECTOR_MAX, 5), -1, dtype=np.int32)
     if selector.get("active"):
         for i, opt in enumerate((selector.get("options") or [])[:SELECTOR_MAX]):
+            card_idx = registry.card_idx(opt.get("card_id")) if registry else 0
             selector_options[i] = [
                 1,
                 int(opt.get("cost") if opt.get("cost") is not None else -1),
                 1 if opt.get("is_upgraded") else 0,
                 TARGET_TYPE_TO_IDX.get(opt.get("target_type", ""), 0),
+                card_idx,
             ]
     selector_scalars = np.array(
         [
@@ -278,6 +292,16 @@ class STS2CombatEnv(gym.Env):
     encounter :
         Encounter id to jump to on reset. If None, uses the currently-active
         encounter at construction time.
+    character :
+        If set (Day-9.2), env starts a fresh single-player run on first reset
+        via /start_run before snapshotting + jumping to ``encounter``. One of
+        ``"IRONCLAD"`` / ``"SILENT"`` / ``"DEFECT"`` / ``"NECROBINDER"`` /
+        ``"REGENT"``. If None, env requires user to already be in a run
+        (legacy Level-A behavior).
+    ascension :
+        0..10. Only used when ``character`` is set.
+    run_seed :
+        Optional seed for the fresh run. Only used when ``character`` is set.
     client :
         Pre-built ModBridgeClient. Defaults to the env-var-resolved port.
     max_steps :
@@ -287,6 +311,15 @@ class STS2CombatEnv(gym.Env):
         ``"shaped"``: also adds (hp_delta / max_hp) per step.
     render_mode :
         ``"ansi"`` or ``"human"`` to render a text view via HumanRenderer.
+    partial_obs :
+        If True, fetches partial /observe (RNG counters + RelicGrabBag masked
+        per Day-9.4). LLM-evaluation default.
+    registry :
+        Optional pre-loaded :class:`~sts2_gym.registry.Registry`. If None and
+        ``use_registry=True``, env loads it lazily on first reset.
+    use_registry :
+        Default True (Day-9.3). Set False to skip card_id / monster_id
+        integer encoding (debug / unit tests).
 
     Notes
     -----
@@ -296,6 +329,9 @@ class STS2CombatEnv(gym.Env):
       ``options={"resnapshot": True}`` to reset.
     * **Singleton**: STS2 is a process singleton (dev plan §2.7). Don't
       instantiate two envs against the same game process.
+    * **Selector toggle**: Day-9.1, env auto-enables ICardSelector on __init__
+      and disables on close(). Manual play remains unintercepted between
+      sessions.
     """
 
     metadata = {"render_modes": ["ansi", "human"]}
@@ -303,22 +339,45 @@ class STS2CombatEnv(gym.Env):
     def __init__(
         self,
         encounter: str | None = None,
+        character: str | None = None,
+        ascension: int = 0,
+        run_seed: str | None = None,
         client: ModBridgeClient | None = None,
         max_steps: int = 200,
         reward_mode: str = "sparse",
         render_mode: str | None = None,
+        partial_obs: bool = False,
+        registry: "Registry | None" = None,
+        use_registry: bool = True,
     ):
         super().__init__()
         if reward_mode not in ("sparse", "shaped"):
             raise ValueError(f"reward_mode must be 'sparse' or 'shaped', got {reward_mode!r}")
         if render_mode is not None and render_mode not in self.metadata["render_modes"]:
             raise ValueError(f"render_mode must be one of {self.metadata['render_modes']}")
+        if ascension < 0 or ascension > 10:
+            raise ValueError(f"ascension must be 0..10, got {ascension}")
 
         self.client = client or ModBridgeClient()
         self.encounter = encounter
+        self.character = character.upper() if character else None
+        self.ascension = ascension
+        self.run_seed = run_seed
         self.max_steps = max_steps
         self.reward_mode = reward_mode
         self.render_mode = render_mode
+        self.partial_obs = partial_obs
+        self._registry: "Registry | None" = registry
+        self._use_registry = use_registry
+
+        # Day-9.1: enable selector for this env session. Disabled in close().
+        # Tolerate failures (bridge might still be coming up at __init__ time).
+        try:
+            self.client.enable_selector()
+        except Exception as e:
+            import warnings
+            warnings.warn(f"STS2CombatEnv: failed to enable selector — {e}")
+        self._selector_enabled = True
 
         self.action_space = spaces.Discrete(ACTION_DIM)
         self.observation_space = spaces.Dict(
@@ -326,12 +385,14 @@ class STS2CombatEnv(gym.Env):
                 "in_combat": spaces.Discrete(2),
                 "round": spaces.Box(low=0, high=999, shape=(), dtype=np.int32),
                 "player": spaces.Box(low=-1, high=9999, shape=(6,), dtype=np.int32),
-                "enemies": spaces.Box(low=-1, high=9999, shape=(ENEMY_MAX, 6), dtype=np.int32),
-                "hand": spaces.Box(low=-1, high=99, shape=(HAND_MAX, 4), dtype=np.int32),
+                # Day-9.3: enemies = 7 cols (added monster_idx)
+                "enemies": spaces.Box(low=-1, high=9999, shape=(ENEMY_MAX, 7), dtype=np.int32),
+                # Day-9.3: hand = 5 cols (added card_idx)
+                "hand": spaces.Box(low=-1, high=10**6, shape=(HAND_MAX, 5), dtype=np.int32),
                 "counts": spaces.Box(low=0, high=999, shape=(5,), dtype=np.int32),
-                # Day-8.1: selector context. [active, min_select, max_select, acc_count]
-                "selector": spaces.Box(low=0, high=99, shape=(4,), dtype=np.int32),
-                "selector_options": spaces.Box(low=-1, high=99, shape=(SELECTOR_MAX, 4), dtype=np.int32),
+                "selector": spaces.Box(low=0, high=10**9, shape=(4,), dtype=np.int32),
+                # Day-9.3: selector_options = 5 cols
+                "selector_options": spaces.Box(low=-1, high=10**6, shape=(SELECTOR_MAX, 5), dtype=np.int32),
             }
         )
 
@@ -345,17 +406,50 @@ class STS2CombatEnv(gym.Env):
         self._steps_in_episode = 0
         self._last_player_hp: int = 0
 
+    def _ensure_registry(self) -> "Registry | None":
+        """Lazy-load registry on first reset. Cached for subsequent calls."""
+        if not self._use_registry:
+            return None
+        if self._registry is None:
+            try:
+                from sts2_gym.registry import Registry
+                self._registry = Registry.load(self.client)
+            except Exception as e:
+                import warnings
+                warnings.warn(f"STS2CombatEnv: registry load failed ({e}); "
+                              f"card/monster idx columns will be 0 (UNKNOWN)")
+                self._use_registry = False
+        return self._registry
+
     # ---------------------------------------------------------------- helpers
 
     def _snapshot_initial_state(self) -> None:
-        """Capture player + RNG snapshots from current run state."""
+        """Capture player + RNG snapshots from current run state.
+
+        Day-9.2: if ``character`` is set and we're not already in a run, start
+        one fresh via /start_run before snapshotting. Otherwise fall back to
+        the legacy "must already be in a run" Level-A behavior.
+        """
         obs = self.client.observe()
         if not obs.get("in_run"):
-            raise RuntimeError(
-                "STS2CombatEnv: game is not in a run — start a run manually first "
-                "(Day-7 doesn't drive main-menu UI). "
-                f"phase={obs.get('phase')!r}"
-            )
+            if self.character is None:
+                raise RuntimeError(
+                    "STS2CombatEnv: game is not in a run. Either start one "
+                    "manually from the main menu, or pass character='...' to "
+                    "auto-start a fresh run via /start_run. "
+                    f"phase={obs.get('phase')!r}"
+                )
+            # Day-9.2: fresh-run via direct API.
+            self.client.start_run(self.character, ascension=self.ascension, seed=self.run_seed)
+            import time
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                obs = self.client.observe()
+                if obs.get("in_run"):
+                    break
+                time.sleep(0.1)
+            else:
+                raise TimeoutError("STS2CombatEnv: run did not start within 5s of /start_run")
         self._player_snapshot = self.client.snapshot_player()
         self._rng_snapshot = self.client.snapshot_run_rng()
         # If encounter wasn't fixed at construction, pin it now.
@@ -369,7 +463,7 @@ class STS2CombatEnv(gym.Env):
 
     def _refresh_caches(self) -> None:
         """Pull latest /observe and /action_mask into the env's caches."""
-        self._last_obs_payload = self.client.observe()
+        self._last_obs_payload = self.client.observe(partial=self.partial_obs)
         self._last_mask_payload = self.client.action_mask()
 
     def _player_hp_now(self) -> int:
@@ -386,7 +480,8 @@ class STS2CombatEnv(gym.Env):
         reward: float,
         extra_info: dict[str, Any] | None = None,
     ) -> tuple[dict[str, np.ndarray], float, bool, bool, dict[str, Any]]:
-        obs = encode_observation(self._last_obs_payload)
+        registry = self._registry  # registry was loaded by _ensure_registry on first reset
+        obs = encode_observation(self._last_obs_payload, registry=registry)
         action_mask = build_action_mask(self._last_mask_payload, self._last_obs_payload.get("combat") or {})
 
         info: dict[str, Any] = {
@@ -419,6 +514,9 @@ class STS2CombatEnv(gym.Env):
 
         if self._player_snapshot is None or options.get("resnapshot"):
             self._snapshot_initial_state()
+            # Day-9.3: load registry on first reset (after run is confirmed
+            # active and ModelDb is fully initialized server-side).
+            self._ensure_registry()
 
         assert self.encounter is not None  # set in _snapshot_initial_state
         resp = self.client.reset(
@@ -562,8 +660,14 @@ class STS2CombatEnv(gym.Env):
         return text  # "ansi"
 
     def close(self) -> None:
-        # Nothing to dispose — the HTTP client is stateless and the game keeps running.
-        pass
+        # Day-9.1: disable selector so manual play after the env session isn't
+        # intercepted. Tolerate failures — the game might already be torn down.
+        if getattr(self, "_selector_enabled", False):
+            try:
+                self.client.disable_selector()
+            except Exception:  # noqa: BLE001
+                pass
+            self._selector_enabled = False
 
 
 __all__ = [
@@ -572,6 +676,11 @@ __all__ = [
     "ENEMY_MAX",
     "ACTION_DIM",
     "END_TURN_IDX",
+    "SELECTOR_MAX",
+    "SELECTOR_PICK_BASE",
+    "SELECTOR_UNPICK_BASE",
+    "SELECTOR_CONFIRM_IDX",
+    "SELECTOR_SKIP_IDX",
     "TARGET_TYPES",
     "encode_observation",
     "build_action_mask",

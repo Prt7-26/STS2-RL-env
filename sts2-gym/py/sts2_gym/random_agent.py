@@ -235,7 +235,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"[agent] connected to {c.base}, seed={args.seed}, max_turns={args.max_turns}")
-    summary = run_one_combat(c, rng, max_turns=args.max_turns, verbose=args.verbose)
+    # Day-9.1: enable selector for the session, disable when done so manual play
+    # afterward isn't intercepted by our ICardSelector.
+    try:
+        c.enable_selector()
+    except Exception as e:
+        print(f"[agent] warning: enable_selector failed ({e}) — selector-trigger cards may hang")
+    try:
+        summary = run_one_combat(c, rng, max_turns=args.max_turns, verbose=args.verbose)
+    finally:
+        try: c.disable_selector()
+        except Exception: pass
     print()
     print("[agent] === SUMMARY ===")
     for k, v in summary.items():

@@ -20,13 +20,45 @@ public static class Sts2GymMod
     private static int _turnsObserved;
 
     /// <summary>
-    /// Day-8.1: our ICardSelector implementation. Installed once at init via
-    /// CardSelectCmd.PushSelector — every "choose N cards" UI screen in the game
-    /// routes through here (Survivor's discard, deck upgrade, transform, card
-    /// reward, choose-a-card events, …). See <see cref="Sts2GymCardSelector"/>.
+    /// Day-8.1: our ICardSelector implementation. Day-9.1: installed on demand
+    /// via /selector/enable so manual play isn't intercepted by default. The
+    /// agent layer (gym.Env / random_agent) enables on session start, disables
+    /// on close. <see cref="Sts2GymCardSelector"/>.
     /// </summary>
     public static Sts2GymCardSelector Selector { get; private set; } = new Sts2GymCardSelector();
     private static IDisposable? _selectorScope;
+    private static bool _selectorEnabled;
+
+    /// <summary>Whether our selector is currently pushed onto CardSelectCmd's stack.</summary>
+    public static bool SelectorEnabled => _selectorEnabled;
+
+    /// <summary>
+    /// Day-9.1: push our ICardSelector onto the global stack. Idempotent — safe
+    /// to call multiple times. Once enabled, also re-pushed on every RunStarted
+    /// because RunManager.CleanUp wipes the stack between runs.
+    /// </summary>
+    public static void EnableSelector()
+    {
+        if (_selectorEnabled && _selectorScope != null) return;
+        _selectorScope?.Dispose();
+        _selectorScope = CardSelectCmd.PushSelector(Selector);
+        _selectorEnabled = true;
+        Log.Info($"{LogTag} ICardSelector ENABLED");
+    }
+
+    /// <summary>
+    /// Day-9.1: pop our selector + force-resolve any pending request with min
+    /// defaults so the engine's awaiting continuation doesn't deadlock.
+    /// </summary>
+    public static void DisableSelector()
+    {
+        if (!_selectorEnabled) return;
+        _selectorEnabled = false;
+        Selector.ForceResolveWithDefault();
+        _selectorScope?.Dispose();
+        _selectorScope = null;
+        Log.Info($"{LogTag} ICardSelector DISABLED");
+    }
 
     static void Init()
     {
@@ -53,13 +85,8 @@ public static class Sts2GymMod
             // Day-3 P0 milestone: start the HTTP bridge so Python side can probe state.
             // HttpListener does NOT depend on Godot scene tree, safe to start in ExecuteVeryEarly.
             HttpBridge.Start();
-
-            // Day-8.1: install ICardSelector. PushSelector is additive — if the game
-            // ever puts its own selector on top (e.g. a relic-driven temporary one),
-            // we still get popped when it does. UseSelector would throw if the stack
-            // is non-empty, which we can't guarantee at this stage in startup.
-            _selectorScope = CardSelectCmd.PushSelector(Selector);
-            Log.Info($"{LogTag} ICardSelector installed via CardSelectCmd.PushSelector");
+            // Day-9.1: selector is NOT auto-installed any more. Manual play stays
+            // intact unless an agent explicitly POSTs /selector/enable.
         }
         catch (Exception ex)
         {
@@ -75,17 +102,17 @@ public static class Sts2GymMod
         {
             Log.Info($"{LogTag} RunStarted #{_runsObserved}: ascension={run.AscensionLevel} players={run.Players.Count} seed='{run.Rng.StringSeed}' acts={run.Acts.Count}");
 
-            // Day-8.1: re-install our selector. RunManager.CleanUp() between runs
-            // calls CardSelectCmd.Reset() which wipes the selector stack — so the
-            // PushSelector from Init only survives the FIRST run after game start.
-            // Push again every run-start to be safe. The previous scope's Dispose
-            // (if it still exists) becomes a no-op against an empty stack.
-            _selectorScope?.Dispose();
-            _selectorScope = CardSelectCmd.PushSelector(Selector);
-            // Drop any state left over from the previous run (shouldn't happen since
-            // CleanUp cleared the stack, but defensive).
-            Selector.ForceResolveWithDefault();
-            Log.Info($"{LogTag} ICardSelector re-pushed for run #{_runsObserved}");
+            // Day-9.1: only re-push if user explicitly enabled it (typically by an
+            // agent session via /selector/enable). Manual-play runs leave the stack
+            // untouched. RunManager.CleanUp clears CardSelectCmd._selectorStack
+            // between runs so re-push is needed even though we did one earlier.
+            if (_selectorEnabled)
+            {
+                _selectorScope?.Dispose();
+                _selectorScope = CardSelectCmd.PushSelector(Selector);
+                Selector.ForceResolveWithDefault();
+                Log.Info($"{LogTag} ICardSelector re-pushed for run #{_runsObserved}");
+            }
 
             // FastMode toggle. Day-1 实测发现 Instant 触发 NCreature.AnimDie 内 Node.MoveChild(null) 报 ERROR,
             // 这正是 dev plan §2.4 / 任务 C 标注的 AutoSlayer 也避开 Instant 的 corner case 之一。

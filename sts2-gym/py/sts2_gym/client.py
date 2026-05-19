@@ -161,6 +161,48 @@ class ModBridgeClient:
         """
         return self._post_json("/step", action, timeout=timeout)
 
+    # ---------- Day-9.1 selector toggle ----------
+
+    def enable_selector(self) -> dict[str, Any]:
+        """Push our ICardSelector — agent now intercepts every card-pick screen."""
+        return self._post_json("/selector/enable", {})
+
+    def disable_selector(self) -> dict[str, Any]:
+        """Pop our ICardSelector — game's native UI handles card picks again."""
+        return self._post_json("/selector/disable", {})
+
+    # ---------- Day-9.2 fresh-run start ----------
+
+    def start_run(self, character: str, ascension: int = 0, seed: str | None = None) -> dict[str, Any]:
+        """Begin a fresh single-player run via RunManager.SetUpNewSinglePlayer.
+
+        Parameters
+        ----------
+        character : one of {"IRONCLAD", "SILENT", "DEFECT", "NECROBINDER", "REGENT"}
+                    (case-insensitive — server normalizes).
+        ascension : 0..10
+        seed      : optional. If omitted, server generates a fresh "GYM<ticks>" seed.
+
+        Errors
+        ------
+        409 if a run is already in progress (call CleanUp first via game UI).
+        400 on unknown character / bad ascension.
+        """
+        payload: dict[str, Any] = {"character": character, "ascension": ascension}
+        if seed is not None:
+            payload["seed"] = seed
+        return self._post_json("/start_run", payload, timeout=30.0)
+
+    # ---------- Day-9.3 registry ----------
+
+    def registry(self) -> dict[str, Any]:
+        """Fetch the mod's card/monster/relic id → int registry.
+
+        Includes ``game_version`` + ``content_hash`` so the py side can detect
+        content drift between game patches.
+        """
+        return self._get_json("/registry")
+
     def reset(
         self,
         *,

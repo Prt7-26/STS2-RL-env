@@ -220,30 +220,43 @@ def assert_eq(a, b, label):
 
 def test_encode_observation():
     print("[test] encode_observation")
+    # Day-9.3: pass no registry → idx columns default to UNKNOWN (0)
     obs = encode_observation(OBS_PAYLOAD)
     assert obs["in_combat"] == 1, obs["in_combat"]
     assert obs["round"] == 3, obs["round"]
     np.testing.assert_array_equal(obs["player"], [61, 68, 0, 3, 3, 0])
     # Enemies: dead/non-hittable filtered out, sorted by combat_id asc.
-    np.testing.assert_array_equal(
-        obs["enemies"][0],
-        [1, 1, 40, 40, 0, 8],  # E1
-    )
-    np.testing.assert_array_equal(
-        obs["enemies"][1],
-        [1, 1, 30, 40, 5, -1],  # E2 (defends, no attack damage)
-    )
-    np.testing.assert_array_equal(obs["enemies"][2], [-1, -1, -1, -1, -1, -1])
-    # Hand row 0: present=1, cost=1, can_play=1, target_type=AnyEnemy (idx 2)
-    np.testing.assert_array_equal(obs["hand"][0], [1, 1, 1, 2])
-    # Hand row 1: Defend (Self idx=1, can_play=1)
-    np.testing.assert_array_equal(obs["hand"][1], [1, 1, 1, 1])
-    # Hand row 3: Strike too-expensive → can_play=0
-    np.testing.assert_array_equal(obs["hand"][3], [1, 99, 0, 2])
-    # Empty hand slot row 4: present=-1
-    np.testing.assert_array_equal(obs["hand"][4], [-1, -1, -1, -1])
+    # Day-9.3 layout: [alive, hittable, hp, max_hp, block, intent_dmg, monster_idx]
+    np.testing.assert_array_equal(obs["enemies"][0], [1, 1, 40, 40, 0, 8, 0])
+    np.testing.assert_array_equal(obs["enemies"][1], [1, 1, 30, 40, 5, -1, 0])
+    np.testing.assert_array_equal(obs["enemies"][2], [-1, -1, -1, -1, -1, -1, -1])
+    # Hand layout: [present, cost, can_play, target_type_idx, card_idx]
+    np.testing.assert_array_equal(obs["hand"][0], [1, 1, 1, 2, 0])
+    np.testing.assert_array_equal(obs["hand"][1], [1, 1, 1, 1, 0])
+    np.testing.assert_array_equal(obs["hand"][3], [1, 99, 0, 2, 0])
+    np.testing.assert_array_equal(obs["hand"][4], [-1, -1, -1, -1, -1])
     np.testing.assert_array_equal(obs["counts"], [4, 5, 0, 0, 0])
     print("  ✓ encode_observation full shape")
+
+
+def test_encode_observation_with_registry():
+    print("[test] encode_observation(with registry)")
+    # Fake registry — just a dict-like with the methods we use.
+    class FakeRegistry:
+        def card_idx(self, cid):
+            return {"STRIKE_RED": 7, "DEFEND_RED": 12, "CLEAVE": 33}.get(cid, 0)
+        def monster_idx(self, mid):
+            return {"CHOMPER_NORMAL": 4}.get(mid, 0)
+    obs = encode_observation(OBS_PAYLOAD, registry=FakeRegistry())
+    # Hand: STRIKE_RED → 7, DEFEND_RED → 12, CLEAVE → 33, STRIKE_RED → 7
+    assert obs["hand"][0][4] == 7
+    assert obs["hand"][1][4] == 12
+    assert obs["hand"][2][4] == 33
+    assert obs["hand"][3][4] == 7
+    # Enemies: CHOMPER_NORMAL → 4 for both
+    assert obs["enemies"][0][6] == 4
+    assert obs["enemies"][1][6] == 4
+    print("  ✓ registry encoding wires card_idx + monster_idx")
 
 
 def test_build_action_mask():
@@ -453,11 +466,11 @@ def test_encode_obs_selector():
     print("[test] encode_observation(selector active)")
     obs = encode_observation(SELECTOR_OBS)
     np.testing.assert_array_equal(obs["selector"], [1, 1, 1, 0])  # active, min, max, acc_count
-    # Three options, rest -1 padded
-    np.testing.assert_array_equal(obs["selector_options"][0], [1, 1, 0, 2])  # STRIKE: cost=1, AnyEnemy=2
-    np.testing.assert_array_equal(obs["selector_options"][1], [1, 1, 0, 1])  # DEFEND: Self=1
-    np.testing.assert_array_equal(obs["selector_options"][2], [1, 1, 0, 3])  # CLEAVE: AllEnemies=3
-    np.testing.assert_array_equal(obs["selector_options"][3], [-1, -1, -1, -1])
+    # Day-9.3 selector_options layout: [present, cost, is_upgraded, target_type_idx, card_idx]
+    np.testing.assert_array_equal(obs["selector_options"][0], [1, 1, 0, 2, 0])  # STRIKE
+    np.testing.assert_array_equal(obs["selector_options"][1], [1, 1, 0, 1, 0])  # DEFEND
+    np.testing.assert_array_equal(obs["selector_options"][2], [1, 1, 0, 3, 0])  # CLEAVE
+    np.testing.assert_array_equal(obs["selector_options"][3], [-1, -1, -1, -1, -1])
     print("  ✓ selector obs shape + values")
 
 
@@ -475,6 +488,7 @@ def test_render_text_selector():
 def main():
     tests = [
         test_encode_observation,
+        test_encode_observation_with_registry,
         test_build_action_mask,
         test_decode_action_roundtrip,
         test_mask_dead_phase,

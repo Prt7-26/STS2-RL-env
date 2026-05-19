@@ -33,6 +33,7 @@ from sts2_gym.env import (
     decode_action,
     encode_observation,
 )
+from sts2_gym.registry import UNKNOWN_IDX, Registry
 from sts2_gym.renderer import render_combat, render_text, strip_bbcode
 
 # Register the env with Gymnasium so users can `gym.make("STS2-Combat-v0")`.
@@ -51,6 +52,8 @@ __all__ = [
     "StepError",
     "DEFAULT_PORT",
     "STS2CombatEnv",
+    "Registry",
+    "UNKNOWN_IDX",
     "ACTION_DIM",
     "END_TURN_IDX",
     "HAND_MAX",
@@ -67,4 +70,4 @@ __all__ = [
     "render_combat",
     "strip_bbcode",
 ]
-__version__ = "0.0.3"
+__version__ = "0.0.4"

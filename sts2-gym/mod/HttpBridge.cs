@@ -160,6 +160,20 @@ internal static class HttpBridge
         var save = RunManager.Instance.ToSave(preFinishedRoom: null);
         var runJson = JsonSerializer.Serialize(save, JsonSerializationUtility.GetTypeInfo<SerializableRun>());
 
+        // Day-9.4: partial-obs masking on the SerializableRun JSON.
+        //   - run.rng.counters → hidden (replaced with masked sentinel). Knowing
+        //     the next RNG counter would let an agent predict future draws / map
+        //     point generation / monster intent dice rolls.
+        //   - run.shared_relic_grab_bag → keep size, hide pool contents. Lets
+        //     the agent know "how many relics remain to be drawn" without seeing
+        //     which specific ones.
+        //   - max_hp on enemies: NOT masked. HP bars are visible to humans in
+        //     real time (user pushback on Day-9 plan: "怪的血量上限不是人能看到的吗").
+        if (partial)
+        {
+            runJson = MaskRunForPartial(runJson);
+        }
+
         var phase = ResolvePhase();
         var combatJson = CombatSnapshot.Build(partial);
 
@@ -223,6 +237,49 @@ internal static class HttpBridge
         sb.Append(",\"can_confirm\":").Append(snap.Accumulator.Count >= snap.MinSelect ? "true" : "false");
         sb.Append(",\"can_skip\":").Append(snap.MinSelect == 0 ? "true" : "false");
         sb.Append('}');
+    }
+
+    /// <summary>
+    /// Day-9.4: mutate the serialized SerializableRun JSON to hide info that a
+    /// human player can't see. Cheap-ish: parse via JsonNode (~10× slower than
+    /// raw serialize but only runs once per game event, and only for the partial
+    /// view).
+    /// </summary>
+    private static string MaskRunForPartial(string runJson)
+    {
+        try
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(runJson);
+            if (node is System.Text.Json.Nodes.JsonObject root)
+            {
+                // Hide RNG counters but keep the seed (knowing the seed alone is
+                // information available to a human at runs-tart — the dial-an-RNG
+                // outcome is determined by accumulated step count which IS hidden).
+                if (root["rng"] is System.Text.Json.Nodes.JsonObject rng)
+                {
+                    rng.Remove("counters");
+                    rng["counters_masked"] = true;
+                }
+                // RelicGrabBag — keep the size only.
+                if (root["shared_relic_grab_bag"] is System.Text.Json.Nodes.JsonObject bag)
+                {
+                    int size = 0;
+                    if (bag["relics"] is System.Text.Json.Nodes.JsonArray relics)
+                    {
+                        size = relics.Count;
+                    }
+                    bag["size"] = size;
+                    bag.Remove("relics");
+                    bag["relics_masked"] = true;
+                }
+                return root.ToJsonString();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"{Tag} partial mask failed (returning unmasked): {ex.Message}");
+        }
+        return runJson;
     }
 
     /// <summary>
@@ -388,6 +445,35 @@ internal static class HttpBridge
                     break;
                 }
                 (status, body) = HandleReset(ctx).GetAwaiter().GetResult();
+                break;
+
+            case "/selector/enable":
+                if (method != "POST") { status = 405; body = "{\"ok\":false,\"error\":\"POST only\"}"; break; }
+                Sts2GymMod.EnableSelector();
+                RefreshObservation();
+                status = 200;
+                body = $"{{\"ok\":true,\"selector_enabled\":{(Sts2GymMod.SelectorEnabled ? "true" : "false")}}}";
+                break;
+
+            case "/selector/disable":
+                if (method != "POST") { status = 405; body = "{\"ok\":false,\"error\":\"POST only\"}"; break; }
+                Sts2GymMod.DisableSelector();
+                RefreshObservation();
+                status = 200;
+                body = $"{{\"ok\":true,\"selector_enabled\":{(Sts2GymMod.SelectorEnabled ? "true" : "false")}}}";
+                break;
+
+            case "/start_run":
+                if (method != "POST") { status = 405; body = "{\"ok\":false,\"error\":\"POST only\"}"; break; }
+                (status, body) = RunStarter.HandleStartRunAsync(ctx).GetAwaiter().GetResult();
+                break;
+
+            case "/registry":
+                // Day-9.3: dump card/monster id → int mappings for stable obs encoding.
+                // Includes content_hash + game_version so the py side can detect
+                // version skew on game updates.
+                body = ModelRegistry.GetCached();
+                status = 200;
                 break;
 
             default:
