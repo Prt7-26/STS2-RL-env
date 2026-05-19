@@ -23,6 +23,11 @@ from sts2_gym.env import (
     ENEMY_MAX,
     END_TURN_IDX,
     HAND_MAX,
+    SELECTOR_CONFIRM_IDX,
+    SELECTOR_MAX,
+    SELECTOR_PICK_BASE,
+    SELECTOR_SKIP_IDX,
+    SELECTOR_UNPICK_BASE,
     STS2CombatEnv,
     build_action_mask,
     decode_action,
@@ -50,6 +55,11 @@ __all__ = [
     "END_TURN_IDX",
     "HAND_MAX",
     "ENEMY_MAX",
+    "SELECTOR_MAX",
+    "SELECTOR_PICK_BASE",
+    "SELECTOR_UNPICK_BASE",
+    "SELECTOR_CONFIRM_IDX",
+    "SELECTOR_SKIP_IDX",
     "encode_observation",
     "build_action_mask",
     "decode_action",
@@ -57,4 +67,4 @@ __all__ = [
     "render_combat",
     "strip_bbcode",
 ]
-__version__ = "0.0.2"
+__version__ = "0.0.3"

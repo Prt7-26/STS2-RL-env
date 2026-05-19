@@ -172,8 +172,57 @@ internal static class HttpBridge
         {
             sb.Append(",\"combat\":").Append(combatJson);
         }
+        // Day-8.1: selector context overlays whatever phase we're in. The card-pick UI
+        // can interrupt combat, reward, upgrade, transform — all routed through our
+        // ICardSelector. selector_active=true takes precedence: the agent must clear
+        // the selection before /step play_card / end_turn / next-phase actions become
+        // legal again.
+        AppendSelectorJson(sb);
         sb.Append(",\"run\":").Append(runJson).Append('}');
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Day-8.1: emit "selector":{...} when our Sts2GymCardSelector is waiting for input.
+    /// Field shape (kept stable for Python side):
+    ///   {
+    ///     "active": true,
+    ///     "min_select": 1, "max_select": 1,
+    ///     "options": [{"option_idx": 0, "card_id": "...", "cost": int, "is_upgraded": bool,
+    ///                  "upgrade_level": int, "target_type": "..."}],
+    ///     "accumulator": [int],
+    ///     "can_confirm": bool, "can_skip": bool
+    ///   }
+    /// </summary>
+    private static void AppendSelectorJson(StringBuilder sb)
+    {
+        var snap = Sts2GymMod.Selector?.Snapshot();
+        if (snap == null)
+        {
+            sb.Append(",\"selector\":{\"active\":false}");
+            return;
+        }
+        sb.Append(",\"selector\":{\"active\":true");
+        sb.Append(",\"min_select\":").Append(snap.MinSelect);
+        sb.Append(",\"max_select\":").Append(snap.MaxSelect);
+        sb.Append(",\"options\":[");
+        for (int i = 0; i < snap.Options.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var c = snap.Options[i];
+            sb.Append("{\"option_idx\":").Append(i);
+            sb.Append(",\"card_id\":").Append(JsonEncodedString(c.Id.Entry));
+            sb.Append(",\"cost\":").Append(c.EnergyCost.GetResolved());
+            sb.Append(",\"is_upgraded\":").Append(c.IsUpgraded ? "true" : "false");
+            sb.Append(",\"upgrade_level\":").Append(c.CurrentUpgradeLevel);
+            sb.Append(",\"target_type\":").Append(JsonEncodedString(c.TargetType.ToString()));
+            sb.Append('}');
+        }
+        sb.Append(']');
+        sb.Append(",\"accumulator\":[").Append(string.Join(",", snap.Accumulator)).Append(']');
+        sb.Append(",\"can_confirm\":").Append(snap.Accumulator.Count >= snap.MinSelect ? "true" : "false");
+        sb.Append(",\"can_skip\":").Append(snap.MinSelect == 0 ? "true" : "false");
+        sb.Append('}');
     }
 
     /// <summary>
@@ -393,6 +442,57 @@ internal static class HttpBridge
     {
         var sb = new StringBuilder(1024);
         sb.Append('{');
+
+        // ----- Day-8.1: selector takes precedence over combat -----
+        // A pending selector can interrupt combat (Survivor's discard) OR fire
+        // outside combat (reward screen, deck upgrade, etc.). Either way, until
+        // we resolve it via /step select_*, play_card / end_turn are NOT legal —
+        // the engine is blocked on our TCS waiting for the pick.
+        var snap = Sts2GymMod.Selector?.Snapshot();
+        if (snap != null)
+        {
+            sb.Append("\"phase\":\"card_select\"");
+            sb.Append(",\"selector_active\":true");
+            sb.Append(",\"min_select\":").Append(snap.MinSelect);
+            sb.Append(",\"max_select\":").Append(snap.MaxSelect);
+            sb.Append(",\"actions\":[");
+            bool firstSel = true;
+            for (int i = 0; i < snap.Options.Count; i++)
+            {
+                // Pick = available if not already in accumulator and accumulator has room.
+                if (!snap.Accumulator.Contains(i) && snap.Accumulator.Count < snap.MaxSelect)
+                {
+                    if (!firstSel) sb.Append(',');
+                    sb.Append("{\"type\":\"select_pick\",\"option_idx\":").Append(i);
+                    sb.Append(",\"card_id\":").Append(JsonEncodedString(snap.Options[i].Id.Entry));
+                    sb.Append("}");
+                    firstSel = false;
+                }
+            }
+            // Unpick = whatever's already in the accumulator.
+            foreach (var pickedIdx in snap.Accumulator)
+            {
+                if (!firstSel) sb.Append(',');
+                sb.Append("{\"type\":\"select_unpick\",\"option_idx\":").Append(pickedIdx).Append("}");
+                firstSel = false;
+            }
+            // Confirm if we have enough picks.
+            if (snap.Accumulator.Count >= snap.MinSelect)
+            {
+                if (!firstSel) sb.Append(',');
+                sb.Append("{\"type\":\"select_confirm\"}");
+                firstSel = false;
+            }
+            // Skip if min_select == 0.
+            if (snap.MinSelect == 0)
+            {
+                if (!firstSel) sb.Append(',');
+                sb.Append("{\"type\":\"select_skip\"}");
+                firstSel = false;
+            }
+            sb.Append("]}");
+            return sb.ToString();
+        }
 
         if (!CombatManager.Instance.IsInProgress)
         {

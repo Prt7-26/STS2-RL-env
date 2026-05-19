@@ -1,28 +1,42 @@
-"""Gymnasium.Env wrapper — Day-7 P0 MVP.
+"""Gymnasium.Env wrapper — Day-7 P0 MVP + Day-8.1 selector support.
 
-Scope (Day-7):
-  * Combat phase only — non-combat phases (map/event/shop/...) need the
-    ICardSelector hooks in the mod (dev plan §2.3, P0 but not yet built).
-  * Level-A reset only — requires pre-existing run. The encounter to jump
-    to is fixed at env construction; reset() restores the player+rng
-    snapshot captured on first reset and re-enters that encounter.
+Scope:
+  * Combat phase + in-combat selector screens (Survivor's discard, etc.).
+    The same selector slots also cover post-combat reward / upgrade /
+    transform / enchant — but Level-A reset jumps directly to an encounter,
+    so the practical Day-8 surface is in-combat selectors. Non-combat
+    phases (map/event/shop/...) still need their own action types — TODO.
+  * Level-A reset only — requires pre-existing run.
   * Discrete action space + ``info["action_mask"]`` boolean array,
-    compatible with sb3-contrib MaskablePPO (canonical RL contract).
+    compatible with sb3-contrib MaskablePPO.
 
 Action encoding (flat Discrete):
 
-    For card_idx in [0..HAND_MAX-1]:
-        For enemy_slot in [0..ENEMY_MAX]:
-            idx = card_idx * (ENEMY_MAX + 1) + enemy_slot
-                  # enemy_slot 0 = no target / Self / AllEnemies / RandomEnemy
-                  # enemy_slot k>0 = enemy at index k-1 in the canonical
-                  #   hittable-enemy list (sorted by combat_id ascending)
-    end_turn_idx = HAND_MAX * (ENEMY_MAX + 1)
-    Total = HAND_MAX * (ENEMY_MAX + 1) + 1
+    Combat range [0, END_TURN_IDX]:
+        For card_idx in [0..HAND_MAX-1]:
+            For enemy_slot in [0..ENEMY_MAX]:
+                idx = card_idx * (ENEMY_MAX + 1) + enemy_slot
+                      # enemy_slot 0 = no target / Self / AllEnemies / RandomEnemy
+                      # enemy_slot k>0 = enemy at canonical hittable-list idx k-1
+        end_turn_idx = HAND_MAX * (ENEMY_MAX + 1)
 
-Defaults: HAND_MAX=10, ENEMY_MAX=6 → action space = 71. The mask is
-re-derived each step from the mod's /action_mask response so illegal
-indices never make it to /step.
+    Selector range [SELECTOR_PICK_BASE, SELECTOR_SKIP_IDX]:
+        select_pick(option_idx) at SELECTOR_PICK_BASE + option_idx
+            # option_idx is the index into the engine's pending selector options
+            # (NOT card_idx — could be in any pile, e.g. discard, draw).
+        select_unpick(option_idx) at SELECTOR_UNPICK_BASE + option_idx
+            # Only legal for indices currently in the accumulator.
+        select_confirm_idx
+            # Only legal when accumulator.size >= min_select.
+        select_skip_idx
+            # Only legal when min_select == 0.
+
+Defaults: HAND_MAX=10, ENEMY_MAX=6, SELECTOR_MAX=50.
+Action space size = 71 (combat) + 50 (pick) + 50 (unpick) + 2 (confirm/skip) = 173.
+
+Which range is legal at any moment is fully expressed by ``info["action_mask"]`` —
+combat actions and selector actions are mutually exclusive (engine is either
+in play_phase or blocked on a selector, never both).
 """
 from __future__ import annotations
 
@@ -36,8 +50,19 @@ from sts2_gym.client import ModBridgeClient, StepError
 
 HAND_MAX = 10
 ENEMY_MAX = 6
-END_TURN_IDX = HAND_MAX * (ENEMY_MAX + 1)
-ACTION_DIM = END_TURN_IDX + 1
+SELECTOR_MAX = 50
+
+# Combat range
+END_TURN_IDX = HAND_MAX * (ENEMY_MAX + 1)              # 70
+COMBAT_LAST_IDX = END_TURN_IDX                          # 70
+
+# Selector range
+SELECTOR_PICK_BASE = COMBAT_LAST_IDX + 1                # 71
+SELECTOR_UNPICK_BASE = SELECTOR_PICK_BASE + SELECTOR_MAX  # 121
+SELECTOR_CONFIRM_IDX = SELECTOR_UNPICK_BASE + SELECTOR_MAX  # 171
+SELECTOR_SKIP_IDX = SELECTOR_CONFIRM_IDX + 1            # 172
+
+ACTION_DIM = SELECTOR_SKIP_IDX + 1                      # 173
 
 # TargetType strings emitted by the mod's CombatSnapshot — must stay in sync
 # with the C# enum MegaCrit.Sts2.Core.Models.Cards.TargetType.
@@ -66,24 +91,58 @@ def _canonical_enemies(combat: dict[str, Any]) -> list[dict[str, Any]]:
 
 def decode_action(action_idx: int, mask_payload: dict[str, Any], combat: dict[str, Any]) -> dict[str, Any]:
     """Translate flat Discrete index → structured action dict for /step."""
-    if action_idx == END_TURN_IDX:
+    a = int(action_idx)
+    if a == END_TURN_IDX:
         return {"type": "end_turn"}
-    card_idx, enemy_slot = divmod(int(action_idx), ENEMY_MAX + 1)
-    out: dict[str, Any] = {"type": "play_card", "card_idx": card_idx}
-    if enemy_slot > 0:
-        enemies = _canonical_enemies(combat)
-        if enemy_slot - 1 >= len(enemies):
-            raise ValueError(
-                f"action {action_idx}: enemy_slot={enemy_slot} but only "
-                f"{len(enemies)} hittable enemies"
-            )
-        out["target_combat_id"] = enemies[enemy_slot - 1]["combat_id"]
-    return out
+    if a == SELECTOR_CONFIRM_IDX:
+        return {"type": "select_confirm"}
+    if a == SELECTOR_SKIP_IDX:
+        return {"type": "select_skip"}
+    if SELECTOR_PICK_BASE <= a < SELECTOR_PICK_BASE + SELECTOR_MAX:
+        return {"type": "select_pick", "option_idx": a - SELECTOR_PICK_BASE}
+    if SELECTOR_UNPICK_BASE <= a < SELECTOR_UNPICK_BASE + SELECTOR_MAX:
+        return {"type": "select_unpick", "option_idx": a - SELECTOR_UNPICK_BASE}
+    if 0 <= a < END_TURN_IDX:
+        card_idx, enemy_slot = divmod(a, ENEMY_MAX + 1)
+        out: dict[str, Any] = {"type": "play_card", "card_idx": card_idx}
+        if enemy_slot > 0:
+            enemies = _canonical_enemies(combat)
+            if enemy_slot - 1 >= len(enemies):
+                raise ValueError(
+                    f"action {a}: enemy_slot={enemy_slot} but only "
+                    f"{len(enemies)} hittable enemies"
+                )
+            out["target_combat_id"] = enemies[enemy_slot - 1]["combat_id"]
+        return out
+    raise ValueError(f"action index {a} out of range [0, {ACTION_DIM})")
 
 
 def build_action_mask(mask_payload: dict[str, Any], combat: dict[str, Any]) -> np.ndarray:
-    """Convert the mod's /action_mask response into a fixed-length bool array."""
+    """Convert the mod's /action_mask response into a fixed-length bool array.
+
+    Combat and selector slots are mutually exclusive — the engine is either in
+    play_phase or blocked on a selector, never both. The mod signals which mode
+    we're in via ``mask_payload["selector_active"]`` (Day-8.1) — for backward
+    compatibility we also recognize the action ``type`` field directly.
+    """
     mask = np.zeros(ACTION_DIM, dtype=bool)
+    if mask_payload.get("selector_active"):
+        for action in mask_payload.get("actions", []):
+            t = action.get("type")
+            if t == "select_pick":
+                opt = action.get("option_idx")
+                if opt is not None and 0 <= opt < SELECTOR_MAX:
+                    mask[SELECTOR_PICK_BASE + opt] = True
+            elif t == "select_unpick":
+                opt = action.get("option_idx")
+                if opt is not None and 0 <= opt < SELECTOR_MAX:
+                    mask[SELECTOR_UNPICK_BASE + opt] = True
+            elif t == "select_confirm":
+                mask[SELECTOR_CONFIRM_IDX] = True
+            elif t == "select_skip":
+                mask[SELECTOR_SKIP_IDX] = True
+        return mask
+
     if not mask_payload.get("play_phase"):
         return mask
 
@@ -174,6 +233,31 @@ def encode_observation(obs_payload: dict[str, Any]) -> dict[str, np.ndarray]:
         dtype=np.int32,
     )
 
+    # Day-8.1: selector context. selector_active=1 means the engine is blocked
+    # waiting on an ICardSelector pick; play_card / end_turn are illegal until
+    # resolved. selector_options[k] = [present, cost, is_upgraded, target_type_idx]
+    # mirroring the hand encoding so the policy can share weights if it wants to.
+    selector = obs_payload.get("selector") or {}
+    selector_active_int = 1 if selector.get("active") else 0
+    selector_options = np.full((SELECTOR_MAX, 4), -1, dtype=np.int32)
+    if selector.get("active"):
+        for i, opt in enumerate((selector.get("options") or [])[:SELECTOR_MAX]):
+            selector_options[i] = [
+                1,
+                int(opt.get("cost") if opt.get("cost") is not None else -1),
+                1 if opt.get("is_upgraded") else 0,
+                TARGET_TYPE_TO_IDX.get(opt.get("target_type", ""), 0),
+            ]
+    selector_scalars = np.array(
+        [
+            selector_active_int,
+            int(selector.get("min_select") or 0),
+            int(selector.get("max_select") or 0),
+            len(selector.get("accumulator") or []),
+        ],
+        dtype=np.int32,
+    )
+
     return {
         "in_combat": np.int64(in_combat),
         "round": np.int32(combat.get("round") or 0),
@@ -181,6 +265,8 @@ def encode_observation(obs_payload: dict[str, Any]) -> dict[str, np.ndarray]:
         "enemies": enemies_arr,
         "hand": hand_arr,
         "counts": counts,
+        "selector": selector_scalars,
+        "selector_options": selector_options,
     }
 
 
@@ -243,6 +329,9 @@ class STS2CombatEnv(gym.Env):
                 "enemies": spaces.Box(low=-1, high=9999, shape=(ENEMY_MAX, 6), dtype=np.int32),
                 "hand": spaces.Box(low=-1, high=99, shape=(HAND_MAX, 4), dtype=np.int32),
                 "counts": spaces.Box(low=0, high=999, shape=(5,), dtype=np.int32),
+                # Day-8.1: selector context. [active, min_select, max_select, acc_count]
+                "selector": spaces.Box(low=0, high=99, shape=(4,), dtype=np.int32),
+                "selector_options": spaces.Box(low=-1, high=99, shape=(SELECTOR_MAX, 4), dtype=np.int32),
             }
         )
 
@@ -340,19 +429,27 @@ class STS2CombatEnv(gym.Env):
         if not resp.get("ok"):
             raise RuntimeError(f"STS2CombatEnv: /reset returned ok=false: {resp}")
 
-        # Wait for combat to actually become play_phase. The bridge caches
-        # /observe + /action_mask on game events, so we just spin /observe.
+        # Wait for the env to be ready to accept actions. Two valid ready states:
+        #   1. phase==combat AND play_phase=True (normal start-of-combat)
+        #   2. selector_active=True (Day-8.1: start-of-combat relic like Gambling
+        #      Chip can fire a selector BEFORE play_phase ever becomes true —
+        #      the engine is waiting on our TCS, so play_phase stays false
+        #      indefinitely)
         import time
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             self._refresh_caches()
-            if self._last_obs_payload.get("phase") == "combat" and (
-                self._last_obs_payload.get("combat") or {}
-            ).get("play_phase"):
+            obs = self._last_obs_payload
+            combat = obs.get("combat") or {}
+            selector_active = (obs.get("selector") or {}).get("active")
+            if selector_active or (obs.get("phase") == "combat" and combat.get("play_phase")):
                 break
             time.sleep(0.1)
         else:
-            raise TimeoutError("STS2CombatEnv: combat play_phase did not become True after reset")
+            raise TimeoutError(
+                "STS2CombatEnv: neither play_phase nor selector became active "
+                "within 10s after reset"
+            )
 
         self._steps_in_episode = 0
         self._last_player_hp = self._player_hp_now()
@@ -408,7 +505,18 @@ class STS2CombatEnv(gym.Env):
                 # Not a death-screen race — propagate.
                 raise
 
-        terminated = not still_in_combat or self._last_obs_payload.get("phase") != "combat"
+        # Day-8.1: card_select / combat both keep the episode running. Only
+        # truly-out-of-combat phases (game_over, between_rooms, reward, etc.)
+        # AND still_in_combat=false signal episode end. selector_active inside
+        # combat shows up as phase="card_select" or sometimes phase="combat"
+        # with selector_active=true — both are non-terminal.
+        current_phase = self._last_obs_payload.get("phase")
+        selector_active = (self._last_obs_payload.get("selector") or {}).get("active")
+        in_episode = (
+            still_in_combat
+            and (current_phase in ("combat", "card_select") or selector_active)
+        )
+        terminated = not in_episode
         truncated = self._steps_in_episode >= self.max_steps and not terminated
 
         # ----- reward -----

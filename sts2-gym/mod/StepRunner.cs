@@ -92,9 +92,102 @@ internal static class StepRunner
         {
             "play_card" => await PlayCardAsync(cmd),
             "end_turn" => await EndTurnAsync(),
+            "select_pick" => await SelectPickAsync(cmd),
+            "select_unpick" => await SelectUnpickAsync(cmd),
+            "select_confirm" => await SelectConfirmAsync(),
+            "select_skip" => await SelectSkipAsync(),
             "noop" => (200, "{\"ok\":true,\"action\":\"noop\"}"),
             _ => (400, "{\"ok\":false,\"error\":\"unknown action type\",\"type\":" + JsonStr(type ?? "") + "}"),
         };
+    }
+
+    // -------------------------- selector actions --------------------------
+
+    /// <summary>
+    /// Day-8.1: forward a select_* action to Sts2GymCardSelector. The state-machine
+    /// transition itself is pure (no Godot APIs touched), but when a selector
+    /// resolves we must marshal a cache refresh through GameThread so the next
+    /// /observe / /action_mask served reflects the engine state (which advances
+    /// asynchronously after the TCS completes — typically tens of ms while the
+    /// game processes the resumed card-effect queue).
+    /// </summary>
+    private static async Task<(int status, string body)> SelectPickAsync(JsonElement cmd)
+    {
+        if (!cmd.TryGetProperty("option_idx", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'option_idx'\"}");
+        var idx = idxProp.GetInt32();
+        var beforeActive = Sts2GymMod.Selector.IsActive;
+        var (ok, msg) = Sts2GymMod.Selector.Pick(idx);
+        if (ok)
+        {
+            // Must refresh even when the selector stays active — otherwise the
+            // next /action_mask still shows the just-picked option as a legal
+            // pick → random agent picks it again → 409. Grace window only
+            // matters when the selector resolved (engine continuation needs time).
+            bool resolved = beforeActive && !Sts2GymMod.Selector.IsActive;
+            await SettleAndRefreshAsync(graceMs: resolved ? 150 : 0);
+        }
+        return BuildSelectResponse(ok, "select_pick", idx, msg);
+    }
+
+    private static async Task<(int status, string body)> SelectUnpickAsync(JsonElement cmd)
+    {
+        if (!cmd.TryGetProperty("option_idx", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'option_idx'\"}");
+        var idx = idxProp.GetInt32();
+        var (ok, msg) = Sts2GymMod.Selector.Unpick(idx);
+        if (ok) await SettleAndRefreshAsync(graceMs: 0);
+        return BuildSelectResponse(ok, "select_unpick", idx, msg);
+    }
+
+    private static async Task<(int status, string body)> SelectConfirmAsync()
+    {
+        var (ok, msg) = Sts2GymMod.Selector.Confirm();
+        if (ok) await SettleAndRefreshAsync();
+        return BuildSelectResponse(ok, "select_confirm", null, msg);
+    }
+
+    private static async Task<(int status, string body)> SelectSkipAsync()
+    {
+        var (ok, msg) = Sts2GymMod.Selector.Skip();
+        if (ok) await SettleAndRefreshAsync();
+        return BuildSelectResponse(ok, "select_skip", null, msg);
+    }
+
+    /// <summary>
+    /// After a selector resolves, marshal a brief grace + cache refresh through
+    /// the main thread. <paramref name="graceMs"/> defaults to 150ms — enough for
+    /// the engine to consume the TCS resolution, run any chained card effects,
+    /// and fire its events. RefreshObservation must run on main thread because
+    /// it reads NOverlayStack / CombatManager singletons.
+    /// </summary>
+    private static async Task SettleAndRefreshAsync(int graceMs = 150)
+    {
+        try
+        {
+            await GameThread.RunOnMainAsync<int>(async () =>
+            {
+                if (graceMs > 0) await Task.Delay(graceMs);
+                HttpBridge.RefreshObservation();
+                return 0;
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"{Tag} SettleAndRefreshAsync failed: {ex.Message}");
+        }
+    }
+
+    private static (int status, string body) BuildSelectResponse(bool ok, string action, int? optionIdx, string msg)
+    {
+        var sb = new StringBuilder(128);
+        sb.Append("{\"ok\":").Append(ok ? "true" : "false");
+        sb.Append(",\"action\":\"").Append(action).Append('"');
+        if (optionIdx.HasValue) sb.Append(",\"option_idx\":").Append(optionIdx.Value);
+        sb.Append(",\"message\":").Append(JsonStr(msg));
+        sb.Append(",\"selector_active\":").Append(Sts2GymMod.Selector.IsActive ? "true" : "false");
+        sb.Append('}');
+        return (ok ? 200 : 409, sb.ToString());
     }
 
     // -------------------------- play_card --------------------------
@@ -102,6 +195,8 @@ internal static class StepRunner
     private static async Task<(int status, string body)> PlayCardAsync(JsonElement cmd)
     {
         // ----- preconditions -----
+        if (Sts2GymMod.Selector.IsActive)
+            return (409, "{\"ok\":false,\"error\":\"selector active — resolve via /step select_* first\"}");
         if (!CombatManager.Instance.IsInProgress)
             return (409, "{\"ok\":false,\"error\":\"not in combat\"}");
         if (!CombatManager.Instance.IsPlayPhase)
@@ -189,26 +284,37 @@ internal static class StepRunner
         // dev plan §2.3 sync invariant: wait for queue to drain — TryManualPlay
         // enqueues PlayCardAction asynchronously, so we await its completion
         // via the game's own sync primitive: ActionQueueSet.BecameEmpty() Task.
+        //
+        // Day-8.1: the card play might trigger an ICardSelector (Survivor's
+        // discard, etc.). In that case the engine pauses the action queue waiting
+        // on our TCS — BecameEmpty() will never fire until /step select_pick
+        // resolves it. But /step select_pick can't be served while we hold
+        // _stepLock here → deadlock. We poll for selector activation alongside
+        // the queue-empty signal and return early when the selector fires; the
+        // response carries selector_active=true so the agent knows to resolve it.
         var aqs = RunManager.Instance.ActionQueueSet;
-        if (aqs != null)
+        var becameEmpty = aqs?.BecameEmpty();
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
         {
-            try
-            {
-                await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(10));
-            }
-            catch (TimeoutException)
-            {
-                Log.Warn($"{Tag} ActionQueueSet.BecameEmpty timed out after 10s — combat may be stuck");
-                // Don't fail the step — let the client decide via /observe
-            }
+            if (Sts2GymMod.Selector.IsActive) break;
+            if (becameEmpty == null || becameEmpty.IsCompleted) break;
+            await Task.Delay(50);
         }
+        if (DateTime.UtcNow >= deadline && becameEmpty != null && !becameEmpty.IsCompleted && !Sts2GymMod.Selector.IsActive)
+        {
+            Log.Warn($"{Tag} play_card wait timed out after 10s — combat may be stuck");
+        }
+
+        bool selectorActive = Sts2GymMod.Selector.IsActive;
 
         // Day-7.1: killing-blow race guard. If the queue drained because the last
         // enemy died, the "combat ended" transition fires a frame or two LATER.
         // Without this grace window, PlayCardAsync returns still_in_combat=true,
         // then the agent's next /step request lands while IsInProgress=false
         // → 409 "not in combat". Poll briefly for stabilization: at most 400ms.
-        if (CombatManager.Instance.IsInProgress)
+        // Skip this if a selector is active — we'll be back here after it resolves.
+        if (!selectorActive && CombatManager.Instance.IsInProgress)
         {
             var killDeadline = DateTime.UtcNow.AddMilliseconds(400);
             while (CombatManager.Instance.IsInProgress && DateTime.UtcNow < killDeadline)
@@ -244,6 +350,10 @@ internal static class StepRunner
         sb.Append(",\"energy_delta\":").Append(energyAfter - energyBefore);
         sb.Append(",\"still_in_combat\":").Append(stillInCombat ? "true" : "false");
         sb.Append(",\"is_play_phase\":").Append(CombatManager.Instance.IsPlayPhase ? "true" : "false");
+        // Day-8.1: tell caller if the play triggered a selector (e.g. Survivor's
+        // discard). Agent must issue /step select_* before play_card / end_turn
+        // becomes legal again.
+        sb.Append(",\"selector_active\":").Append(selectorActive ? "true" : "false");
         sb.Append('}');
         return (200, sb.ToString());
     }
@@ -265,6 +375,8 @@ internal static class StepRunner
     /// </summary>
     private static async Task<(int status, string body)> EndTurnAsync()
     {
+        if (Sts2GymMod.Selector.IsActive)
+            return (409, "{\"ok\":false,\"error\":\"selector active — resolve via /step select_* first\"}");
         if (!CombatManager.Instance.IsInProgress)
             return (409, "{\"ok\":false,\"error\":\"not in combat\"}");
         if (!CombatManager.Instance.IsPlayPhase)
@@ -295,16 +407,19 @@ internal static class StepRunner
         //   1. wait for IsPlayPhase to flip false (enemy turn / animations started)
         //   2. wait for IsPlayPhase to flip true again (next player turn started)
         //      OR combat to end (player died, or end-of-combat from delayed enemy AoE).
-        // 50ms poll resolution × up to 20s total grace window.
+        // Day-8.1: also break if a selector triggers mid-enemy-turn (end-of-turn
+        // power effects can fire selectors).
         var pollDeadline = DateTime.UtcNow.AddSeconds(20);
         while (CombatManager.Instance.IsInProgress
                && CombatManager.Instance.IsPlayPhase
+               && !Sts2GymMod.Selector.IsActive
                && DateTime.UtcNow < pollDeadline)
         {
             await Task.Delay(50);
         }
         while (CombatManager.Instance.IsInProgress
                && !CombatManager.Instance.IsPlayPhase
+               && !Sts2GymMod.Selector.IsActive
                && DateTime.UtcNow < pollDeadline)
         {
             await Task.Delay(50);
@@ -332,6 +447,7 @@ internal static class StepRunner
         sb.Append(",\"hp_delta\":").Append(hpAfter - hpBefore);
         sb.Append(",\"still_in_combat\":").Append(stillInCombat ? "true" : "false");
         sb.Append(",\"is_play_phase\":").Append(isPlayPhase ? "true" : "false");
+        sb.Append(",\"selector_active\":").Append(Sts2GymMod.Selector.IsActive ? "true" : "false");
         sb.Append('}');
         return (200, sb.ToString());
     }

@@ -68,6 +68,12 @@ internal static class ScenarioInjector
             return (409, "{\"ok\":false,\"error\":\"not in a run — start a run from the main menu first, then call /reset\"}");
         }
 
+        // Day-8.1: clear any stale selector before we jump encounters. A pending
+        // selector from the previous combat would otherwise leak across episode
+        // boundaries (TCS never resolved → engine deadlocks on the new combat's
+        // first card-effect that uses CardSelectCmd).
+        Sts2GymMod.Selector?.ForceResolveWithDefault();
+
         // Defensive: read fields up-front so we can fail fast on bad input.
         string? encounterName = null;
         if (cmd.TryGetProperty("encounter", out var encProp) && encProp.ValueKind == JsonValueKind.String)

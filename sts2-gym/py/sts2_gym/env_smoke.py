@@ -105,7 +105,21 @@ def main(argv: list[str] | None = None) -> int:
             steps += 1
             total_reward += reward
             # Compact one-line trace per step so a hung loop is immediately visible.
-            tag = "end_turn" if action == END_TURN_IDX else f"play[{decoded.get('card_idx')}]"
+            t = decoded.get("type")
+            if t == "end_turn":
+                tag = "end_turn"
+            elif t == "play_card":
+                tag = f"play[{decoded.get('card_idx')}]"
+            elif t == "select_pick":
+                tag = f"sel_pick[{decoded.get('option_idx')}]"
+            elif t == "select_unpick":
+                tag = f"sel_unpick[{decoded.get('option_idx')}]"
+            elif t == "select_confirm":
+                tag = "sel_confirm"
+            elif t == "select_skip":
+                tag = "sel_skip"
+            else:
+                tag = t or "?"
             err = info.get("step_error")
             err_str = f" ERR={err['payload'].get('error', '?')}" if err else ""
             hp_delta = info.get('hp_delta')

@@ -20,6 +20,11 @@ from sts2_gym.env import (
     ENEMY_MAX,
     END_TURN_IDX,
     HAND_MAX,
+    SELECTOR_CONFIRM_IDX,
+    SELECTOR_MAX,
+    SELECTOR_PICK_BASE,
+    SELECTOR_SKIP_IDX,
+    SELECTOR_UNPICK_BASE,
     build_action_mask,
     decode_action,
     encode_observation,
@@ -331,6 +336,142 @@ def test_render_text_non_combat():
     print("  ✓ map-phase placeholder OK")
 
 
+# ============================ Day-8.1 selector tests ============================
+
+SELECTOR_OBS = {
+    "phase": "card_select",
+    "in_run": True,
+    "snapshot_age_ms": 8,
+    "partial": False,
+    "combat": OBS_PAYLOAD["combat"],  # combat in progress under the selector overlay
+    "selector": {
+        "active": True,
+        "min_select": 1,
+        "max_select": 1,
+        "accumulator": [],
+        "can_confirm": False,
+        "can_skip": False,
+        "options": [
+            {"option_idx": 0, "card_id": "STRIKE_RED", "cost": 1, "is_upgraded": False, "upgrade_level": 0, "target_type": "AnyEnemy"},
+            {"option_idx": 1, "card_id": "DEFEND_RED", "cost": 1, "is_upgraded": False, "upgrade_level": 0, "target_type": "Self"},
+            {"option_idx": 2, "card_id": "CLEAVE", "cost": 1, "is_upgraded": False, "upgrade_level": 0, "target_type": "AllEnemies"},
+        ],
+    },
+}
+
+SELECTOR_MASK = {
+    "phase": "card_select",
+    "selector_active": True,
+    "min_select": 1,
+    "max_select": 1,
+    "actions": [
+        {"type": "select_pick", "option_idx": 0, "card_id": "STRIKE_RED"},
+        {"type": "select_pick", "option_idx": 1, "card_id": "DEFEND_RED"},
+        {"type": "select_pick", "option_idx": 2, "card_id": "CLEAVE"},
+        # No confirm (accumulator empty), no skip (min=1)
+    ],
+}
+
+# Variant: multi-select with one card already picked, can_confirm + can skip both negative
+SELECTOR_MULTI_MASK = {
+    "phase": "card_select",
+    "selector_active": True,
+    "min_select": 1,
+    "max_select": 3,
+    "actions": [
+        {"type": "select_pick", "option_idx": 1},
+        {"type": "select_pick", "option_idx": 2},
+        {"type": "select_unpick", "option_idx": 0},
+        {"type": "select_confirm"},
+    ],
+}
+
+# Variant: skippable selector (min=0)
+SELECTOR_SKIPPABLE_MASK = {
+    "phase": "card_select",
+    "selector_active": True,
+    "min_select": 0,
+    "max_select": 1,
+    "actions": [
+        {"type": "select_pick", "option_idx": 0},
+        {"type": "select_skip"},
+        {"type": "select_confirm"},
+    ],
+}
+
+
+def test_build_action_mask_selector():
+    print("[test] build_action_mask(selector active, single-pick)")
+    mask = build_action_mask(SELECTOR_MASK, OBS_PAYLOAD["combat"])
+    assert mask.shape == (ACTION_DIM,), mask.shape
+    # Combat range must be all-False (play_card blocked by active selector)
+    assert mask[: END_TURN_IDX + 1].sum() == 0, "combat slots should be False during selector"
+    # Pick slots 0, 1, 2 legal
+    assert mask[SELECTOR_PICK_BASE + 0]
+    assert mask[SELECTOR_PICK_BASE + 1]
+    assert mask[SELECTOR_PICK_BASE + 2]
+    # Pick slot 3 not legal
+    assert not mask[SELECTOR_PICK_BASE + 3]
+    # Confirm/skip not legal yet
+    assert not mask[SELECTOR_CONFIRM_IDX]
+    assert not mask[SELECTOR_SKIP_IDX]
+    assert int(mask.sum()) == 3
+    print(f"  ✓ single-pick selector: 3 legal actions")
+
+
+def test_build_action_mask_selector_multi():
+    print("[test] build_action_mask(multi-select with confirm + unpick)")
+    mask = build_action_mask(SELECTOR_MULTI_MASK, {})
+    assert int(mask.sum()) == 4, mask.sum()
+    assert mask[SELECTOR_PICK_BASE + 1]
+    assert mask[SELECTOR_PICK_BASE + 2]
+    assert mask[SELECTOR_UNPICK_BASE + 0]
+    assert mask[SELECTOR_CONFIRM_IDX]
+    assert not mask[SELECTOR_SKIP_IDX]
+    print("  ✓ multi-select with unpick + confirm")
+
+
+def test_build_action_mask_selector_skippable():
+    print("[test] build_action_mask(skippable selector min=0)")
+    mask = build_action_mask(SELECTOR_SKIPPABLE_MASK, {})
+    assert mask[SELECTOR_PICK_BASE + 0]
+    assert mask[SELECTOR_SKIP_IDX]
+    assert mask[SELECTOR_CONFIRM_IDX]
+    print("  ✓ skippable selector includes skip + confirm")
+
+
+def test_decode_selector_actions():
+    print("[test] decode_action(selector actions)")
+    assert_eq(decode_action(SELECTOR_PICK_BASE + 0, {}, {}), {"type": "select_pick", "option_idx": 0}, "select_pick[0]")
+    assert_eq(decode_action(SELECTOR_PICK_BASE + 7, {}, {}), {"type": "select_pick", "option_idx": 7}, "select_pick[7]")
+    assert_eq(decode_action(SELECTOR_UNPICK_BASE + 3, {}, {}), {"type": "select_unpick", "option_idx": 3}, "select_unpick[3]")
+    assert_eq(decode_action(SELECTOR_CONFIRM_IDX, {}, {}), {"type": "select_confirm"}, "select_confirm")
+    assert_eq(decode_action(SELECTOR_SKIP_IDX, {}, {}), {"type": "select_skip"}, "select_skip")
+
+
+def test_encode_obs_selector():
+    print("[test] encode_observation(selector active)")
+    obs = encode_observation(SELECTOR_OBS)
+    np.testing.assert_array_equal(obs["selector"], [1, 1, 1, 0])  # active, min, max, acc_count
+    # Three options, rest -1 padded
+    np.testing.assert_array_equal(obs["selector_options"][0], [1, 1, 0, 2])  # STRIKE: cost=1, AnyEnemy=2
+    np.testing.assert_array_equal(obs["selector_options"][1], [1, 1, 0, 1])  # DEFEND: Self=1
+    np.testing.assert_array_equal(obs["selector_options"][2], [1, 1, 0, 3])  # CLEAVE: AllEnemies=3
+    np.testing.assert_array_equal(obs["selector_options"][3], [-1, -1, -1, -1])
+    print("  ✓ selector obs shape + values")
+
+
+def test_render_text_selector():
+    print("[test] render_text(selector active)")
+    text = render_text(SELECTOR_OBS, SELECTOR_MASK)
+    assert "phase=card_select" in text, text
+    assert "Selector" in text or "select" in text.lower(), text
+    # Card ids of options should appear
+    assert "STRIKE_RED" in text
+    assert "CLEAVE" in text
+    print(f"  ✓ selector render emitted {len(text.splitlines())} lines")
+
+
 def main():
     tests = [
         test_encode_observation,
@@ -340,6 +481,12 @@ def main():
         test_strip_bbcode,
         test_render_text_combat,
         test_render_text_non_combat,
+        test_build_action_mask_selector,
+        test_build_action_mask_selector_multi,
+        test_build_action_mask_selector_skippable,
+        test_decode_selector_actions,
+        test_encode_obs_selector,
+        test_render_text_selector,
     ]
     for t in tests:
         t()

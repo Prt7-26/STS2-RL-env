@@ -35,6 +35,8 @@ def _summarize_action(action: dict[str, Any]) -> str:
         if action.get("target_combat_id") is not None:
             s += f" -> target_combat_id={action['target_combat_id']}"
         return s
+    if t in ("select_pick", "select_unpick"):
+        return f"{t}[option={action.get('option_idx')}]"
     return t
 
 
@@ -42,22 +44,33 @@ def _pick_random_action(mask: dict[str, Any], rng: random.Random) -> dict[str, A
     """Pick a uniformly-random legal action from the mask.
 
     Strategy:
-      1. From all actions, pick one uniformly. For play_card with required
-         target, pick a uniformly-random legal_target.
-      2. Heuristic tweak: avoid end_turn until we have no other choice (let
-         the agent burn energy first — makes combats actually progress).
+      1. If a selector is active (Day-8.1 — Survivor's discard, post-combat
+         reward, etc.), pick a select_pick / select_confirm / select_skip.
+      2. Otherwise: combat actions — prefer play_card, fall back to end_turn.
     """
     actions = mask["actions"]
     if not actions:
-        raise RuntimeError("action_mask returned empty actions list during play_phase")
+        raise RuntimeError("action_mask returned empty actions list")
+
+    # Day-8.1: selector takes precedence. Mask explicitly says selector_active=True
+    # when this is the case; combat actions are excluded from the list.
+    if mask.get("selector_active"):
+        picks = [a for a in actions if a["type"] == "select_pick"]
+        if picks:
+            chosen = rng.choice(picks)
+            return {"type": "select_pick", "option_idx": chosen["option_idx"]}
+        # No picks available — either we already have enough (confirm) or min=0 (skip).
+        for t in ("select_confirm", "select_skip"):
+            match = next((a for a in actions if a["type"] == t), None)
+            if match is not None:
+                return {"type": t}
+        # Mask is selector_active but somehow empty — surface as error.
+        raise RuntimeError(f"selector_active=true but no actionable selector slot in mask: {actions!r}")
 
     playables = [a for a in actions if a["type"] == "play_card"]
     chosen = rng.choice(playables) if playables else next(a for a in actions if a["type"] == "end_turn")
 
     if chosen["type"] == "play_card":
-        # Wire-protocol fields:  type + card_idx + optional target_combat_id.
-        # Carry card_id / cost along too — server ignores unknown fields, and
-        # the agent loop uses them for human-readable logging.
         out: dict[str, Any] = {
             "type": "play_card",
             "card_idx": chosen["card_idx"],
@@ -67,9 +80,6 @@ def _pick_random_action(mask: dict[str, Any], rng: random.Random) -> dict[str, A
         if chosen.get("requires_target"):
             targets = chosen.get("legal_targets") or []
             if not targets:
-                # Card requires a target but no legal target — fall back to
-                # end_turn (avoids "card cannot target" 409). This shouldn't
-                # happen often because mask should filter out such cards.
                 return {"type": "end_turn"}
             out["target_combat_id"] = rng.choice(targets)["combat_id"]
         return out
@@ -90,19 +100,23 @@ def run_one_combat(
     stuck_actions = 0
     start = time.monotonic()
 
-    # Wait briefly for play_phase to be true (player turn).
+    # Wait briefly for the engine to be ready to accept actions. Either:
+    #   - play_phase=True (player's turn), or
+    #   - selector_active=True (Day-8.1: a start-of-combat relic like Gambling
+    #     Chip fires its selector BEFORE play_phase ever becomes true).
     deadline_wait = time.monotonic() + 10.0
     while time.monotonic() < deadline_wait:
         obs = c.observe()
-        if obs.get("phase") != "combat":
+        if obs.get("phase") not in ("combat", "card_select"):
             print(f"[agent] not in combat (phase={obs.get('phase')!r}) — aborting")
             return {"outcome": "not_in_combat", "phase": obs.get("phase")}
-        combat = obs.get("combat", {})
-        if combat.get("play_phase"):
+        selector_active = (obs.get("selector") or {}).get("active")
+        combat = obs.get("combat") or {}
+        if selector_active or combat.get("play_phase"):
             break
         time.sleep(0.3)
     else:
-        return {"outcome": "timeout_waiting_for_play_phase"}
+        return {"outcome": "timeout_waiting_for_play_phase_or_selector"}
 
     print(f"[agent] combat started: encounter={combat.get('encounter')!r} round={combat.get('round')}")
 
@@ -114,14 +128,15 @@ def run_one_combat(
 
         obs = c.observe()
         phase = obs.get("phase")
-        if phase != "combat":
+        selector_active = (obs.get("selector") or {}).get("active")
+        if phase not in ("combat", "card_select") and not selector_active:
             print(f"[agent] phase changed to {phase!r} — combat ended")
             break
-        combat = obs["combat"]
+        combat = obs.get("combat") or {}
         round_num = combat.get("round", -1)
-        if round_num != last_round_seen:
+        if round_num != last_round_seen and round_num >= 0:
             player_state = (combat.get("players") or [{}])[0]
-            hp = combat.get("creatures", [{}])[0]
+            hp = (combat.get("creatures") or [{}])[0]
             print(
                 f"[agent] round {round_num}: "
                 f"player_hp={hp.get('current_hp')}/{hp.get('max_hp')} "
@@ -131,13 +146,14 @@ def run_one_combat(
             )
             last_round_seen = round_num
 
-        if not combat.get("play_phase"):
+        if not selector_active and not combat.get("play_phase"):
             # Enemy turn or animations — wait for state to come back to us.
             time.sleep(0.2)
             continue
 
         mask = c.action_mask()
-        if not mask.get("play_phase"):
+        # Day-8.1: selector takes precedence over play_phase check.
+        if not mask.get("selector_active") and not mask.get("play_phase"):
             time.sleep(0.2)
             continue
 
