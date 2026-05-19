@@ -371,21 +371,43 @@ class STS2CombatEnv(gym.Env):
         try:
             resp = self.client.step(action_dict)
         except StepError as e:
-            # Server-side rejection (illegal action, unplayable, etc.) — surface as
-            # a non-terminal step with reward=0 and the error in info so callers
-            # can decide. With proper masking this shouldn't normally fire.
-            self._refresh_caches()
+            # Server-side rejection (illegal action, unplayable, etc.). Two things
+            # must hold here to avoid the infinite-loop bug we hit in env_smoke:
+            #   1. _steps_in_episode MUST increment, otherwise max_steps truncation
+            #      never fires and a stale-mask + 409-storm spins forever.
+            #   2. We must re-check phase after refresh: if combat ended (e.g. player
+            #      died waiting for an enemy turn that we never end_turn'd through),
+            #      we surface terminated=True so the episode actually ends.
+            self._steps_in_episode += 1
+            try:
+                self._refresh_caches()
+            except Exception:  # noqa: BLE001
+                pass
+            phase = self._last_obs_payload.get("phase")
+            terminated = phase != "combat"
+            truncated = self._steps_in_episode >= self.max_steps and not terminated
             return self._build_step_return(
-                terminated=False,
-                truncated=False,
+                terminated=terminated,
+                truncated=truncated,
                 reward=0.0,
                 extra_info={"step_error": {"status": e.status, "payload": e.payload}},
             )
 
         self._steps_in_episode += 1
-        self._refresh_caches()
-
         still_in_combat = bool(resp.get("still_in_combat", True))
+        # Tolerate bridge hiccups during combat-end animation. If /observe or
+        # /action_mask blows up immediately after a still_in_combat=false step,
+        # we still know the episode terminated — return the pre-step caches and
+        # surface the error in info.
+        refresh_error: dict[str, Any] | None = None
+        try:
+            self._refresh_caches()
+        except Exception as e:  # noqa: BLE001
+            refresh_error = {"refresh_error": repr(e)}
+            if still_in_combat:
+                # Not a death-screen race — propagate.
+                raise
+
         terminated = not still_in_combat or self._last_obs_payload.get("phase") != "combat"
         truncated = self._steps_in_episode >= self.max_steps and not terminated
 
@@ -408,11 +430,14 @@ class STS2CombatEnv(gym.Env):
             )
             reward += hp_delta / max(max_hp, 1)
 
+        extra: dict[str, Any] = {"step_resp": resp, "hp_delta": hp_delta}
+        if refresh_error:
+            extra.update(refresh_error)
         return self._build_step_return(
             terminated=terminated,
             truncated=truncated,
             reward=reward,
-            extra_info={"step_resp": resp, "hp_delta": hp_delta},
+            extra_info=extra,
         )
 
     def render(self) -> str | None:

@@ -78,21 +78,44 @@ def main(argv: list[str] | None = None) -> int:
 
         total_reward = 0.0
         steps = 0
+        zero_mask_strikes = 0
         while True:
             mask = info["action_mask"]
             if mask.sum() == 0:
-                # Probably between turns — refresh by stepping observe again via env's _refresh.
-                # We have no public "wait" API; just take end_turn as a safety net (shouldn't fire normally).
-                from sts2_gym.env import END_TURN_IDX
-                action = END_TURN_IDX
-            else:
-                action = _pick_masked(mask, rng)
+                # After the Day-7.1 EndTurnAsync fix this should be rare — mod waits
+                # for IsPlayPhase before returning. If we still see all-zero masks for
+                # 5 consecutive observations, the episode is effectively stuck; break
+                # rather than spin into a 409 storm.
+                zero_mask_strikes += 1
+                if zero_mask_strikes >= 5:
+                    print(f"[smoke]   abort: mask all-zero × {zero_mask_strikes} — bailing out")
+                    break
+                time.sleep(0.2)
+                # Force a fresh poll via env internals.
+                env._refresh_caches()
+                from sts2_gym.env import encode_observation, build_action_mask
+                info["action_mask"] = build_action_mask(env._last_mask_payload, env._last_obs_payload.get("combat") or {})
+                continue
 
+            zero_mask_strikes = 0
+            action = _pick_masked(mask, rng)
+            from sts2_gym.env import decode_action, END_TURN_IDX
+            decoded = decode_action(action, env._last_mask_payload, env._last_obs_payload.get("combat") or {})
             obs, reward, terminated, truncated, info = env.step(action)
             steps += 1
             total_reward += reward
+            # Compact one-line trace per step so a hung loop is immediately visible.
+            tag = "end_turn" if action == END_TURN_IDX else f"play[{decoded.get('card_idx')}]"
+            err = info.get("step_error")
+            err_str = f" ERR={err['payload'].get('error', '?')}" if err else ""
+            hp_delta = info.get('hp_delta')
+            hp_str = f" hp_delta={hp_delta:+d}" if isinstance(hp_delta, int) else ""
+            print(
+                f"[smoke]   step {steps:>3} {tag:<14} r={reward:+.2f}"
+                f"{hp_str}"
+                f" term={int(terminated)} trunc={int(truncated)}{err_str}"
+            )
             if args.show_text_every > 0 and steps % args.show_text_every == 0:
-                print(f"[smoke]   step {steps} reward={reward:+.3f}")
                 print(info["text_obs"])
 
             if terminated or truncated:

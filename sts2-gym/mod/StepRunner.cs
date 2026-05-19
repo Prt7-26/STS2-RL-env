@@ -91,7 +91,7 @@ internal static class StepRunner
         return type switch
         {
             "play_card" => await PlayCardAsync(cmd),
-            "end_turn" => EndTurn(),
+            "end_turn" => await EndTurnAsync(),
             "noop" => (200, "{\"ok\":true,\"action\":\"noop\"}"),
             _ => (400, "{\"ok\":false,\"error\":\"unknown action type\",\"type\":" + JsonStr(type ?? "") + "}"),
         };
@@ -203,6 +203,25 @@ internal static class StepRunner
             }
         }
 
+        // Day-7.1: killing-blow race guard. If the queue drained because the last
+        // enemy died, the "combat ended" transition fires a frame or two LATER.
+        // Without this grace window, PlayCardAsync returns still_in_combat=true,
+        // then the agent's next /step request lands while IsInProgress=false
+        // → 409 "not in combat". Poll briefly for stabilization: at most 400ms.
+        if (CombatManager.Instance.IsInProgress)
+        {
+            var killDeadline = DateTime.UtcNow.AddMilliseconds(400);
+            while (CombatManager.Instance.IsInProgress && DateTime.UtcNow < killDeadline)
+            {
+                // If no live hittable enemies remain, give the engine time to fire
+                // the combat-end transition. If there ARE still hittable enemies,
+                // there's nothing to wait for — return immediately.
+                var c = CombatManager.Instance.DebugOnlyGetState();
+                if (c != null && c.HittableEnemies.Count > 0) break;
+                await Task.Delay(50);
+            }
+        }
+
         // Refresh observation cache so next /observe sees the post-play state.
         HttpBridge.RefreshObservation();
 
@@ -231,7 +250,20 @@ internal static class StepRunner
 
     // -------------------------- end_turn --------------------------
 
-    private static (int status, string body) EndTurn()
+    /// <summary>
+    /// Day-7.1 fix: end_turn must wait for the enemy turn to fully play out before
+    /// returning, otherwise the cached /action_mask served immediately afterwards
+    /// still reflects pre-end-turn play_phase=true → next /step end_turn fires while
+    /// IsPlayPhase==false → 409 "not in play phase". Random agent + env_smoke both
+    /// hit this on every round transition.
+    ///
+    /// Sync primitive is the same as PlayCardAsync: ActionQueueSet.BecameEmpty()
+    /// signals when ALL pending actions complete — which after end_turn includes
+    /// the enemy turn + start-of-next-player-turn draw. Once that drains, IsPlayPhase
+    /// is either true again (next round started) or false-and-combat-over (player died
+    /// to the enemy turn).
+    /// </summary>
+    private static async Task<(int status, string body)> EndTurnAsync()
     {
         if (!CombatManager.Instance.IsInProgress)
             return (409, "{\"ok\":false,\"error\":\"not in combat\"}");
@@ -243,13 +275,65 @@ internal static class StepRunner
         if (player == null) return (500, "{\"ok\":false,\"error\":\"no player\"}");
 
         var roundBefore = combat!.RoundNumber;
+        var hpBefore = player.Creature.CurrentHp;
         Log.Info($"{Tag} end_turn (round {roundBefore})");
 
-        // EndTurn is fire-and-forget — it triggers the enemy turn asynchronously.
-        // The next /observe will reflect the state once TurnStarted/TurnEnded fire.
-        PlayerCmd.EndTurn(player, canBackOut: false);
+        try
+        {
+            PlayerCmd.EndTurn(player, canBackOut: false);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"{Tag} PlayerCmd.EndTurn threw: {ex}");
+            return (500, "{\"ok\":false,\"error\":\"EndTurn threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
 
-        return (200, "{\"ok\":true,\"action\":\"end_turn\",\"round_before\":" + roundBefore + "}");
+        // Day-7.1: don't rely on ActionQueueSet.BecameEmpty() — PlayerCmd.EndTurn
+        // enqueues the EndTurnAction asynchronously, so our BecameEmpty() Task may
+        // already be completed at call time (queue was momentarily empty). Instead
+        // poll IsPlayPhase directly:
+        //   1. wait for IsPlayPhase to flip false (enemy turn / animations started)
+        //   2. wait for IsPlayPhase to flip true again (next player turn started)
+        //      OR combat to end (player died, or end-of-combat from delayed enemy AoE).
+        // 50ms poll resolution × up to 20s total grace window.
+        var pollDeadline = DateTime.UtcNow.AddSeconds(20);
+        while (CombatManager.Instance.IsInProgress
+               && CombatManager.Instance.IsPlayPhase
+               && DateTime.UtcNow < pollDeadline)
+        {
+            await Task.Delay(50);
+        }
+        while (CombatManager.Instance.IsInProgress
+               && !CombatManager.Instance.IsPlayPhase
+               && DateTime.UtcNow < pollDeadline)
+        {
+            await Task.Delay(50);
+        }
+        // Also drain anything left in the queue (e.g. end-of-turn power animations).
+        var aqs = RunManager.Instance.ActionQueueSet;
+        if (aqs != null)
+        {
+            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch (TimeoutException) { /* best effort */ }
+        }
+
+        HttpBridge.RefreshObservation();
+
+        var combatAfter = CombatManager.Instance.DebugOnlyGetState();
+        var roundAfter = combatAfter?.RoundNumber ?? roundBefore;
+        var hpAfter = combatAfter?.Players.FirstOrDefault()?.Creature.CurrentHp ?? hpBefore;
+        var stillInCombat = CombatManager.Instance.IsInProgress;
+        var isPlayPhase = CombatManager.Instance.IsPlayPhase;
+
+        var sb = new StringBuilder(256);
+        sb.Append("{\"ok\":true,\"action\":\"end_turn\"");
+        sb.Append(",\"round_before\":").Append(roundBefore);
+        sb.Append(",\"round_after\":").Append(roundAfter);
+        sb.Append(",\"hp_delta\":").Append(hpAfter - hpBefore);
+        sb.Append(",\"still_in_combat\":").Append(stillInCombat ? "true" : "false");
+        sb.Append(",\"is_play_phase\":").Append(isPlayPhase ? "true" : "false");
+        sb.Append('}');
+        return (200, sb.ToString());
     }
 
     // -------------------------- helpers --------------------------
