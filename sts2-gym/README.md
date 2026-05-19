@@ -49,7 +49,21 @@ The `<Reference>` items in `Sts2Gym.csproj` point at `../sts2-reverse/sts2.dll` 
 
 ---
 
-## Deploying the mod (manual, macOS arm64)
+## Deploying the mod
+
+### Recommended: one-shot smoke test script
+
+```bash
+./sts2-gym/scripts/smoke_test.sh
+```
+
+This script builds, deploys, waits for you to launch the game, then tails the log filtered to `[sts2gym]` and mod-loader lines. Override the STS2 install path via env var:
+
+```bash
+STS2_INSTALL=/custom/path ./sts2-gym/scripts/smoke_test.sh
+```
+
+### Manual fallback (macOS arm64)
 
 ```bash
 STS2="$HOME/Library/Application Support/Steam/steamapps/common/Slay the Spire 2"
