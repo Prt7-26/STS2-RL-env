@@ -95,16 +95,31 @@ The current run writes to `godot.log` (overwritten each launch) and also rotates
 
 ### First-launch checklist
 
-1. Launch STS2.
-2. Open the Mods UI. **Agree to mod loading** (this sets `SettingsSave.ModSettings.PlayerAgreedToModLoading = true` —
-   without this, all mods are forcibly disabled). This is a one-time UX gate.
-3. Restart STS2.
-4. Check the log file. Look for:
-   - `Loaded 1 mods (1 total)` — official mod loader confirmation
+The fresh-install flow takes **two game launches** because the UX gate is gated by save state:
+
+**Launch 1 (consent + initialize ModSettings)**:
+1. Launch STS2 via Steam or Spotlight.
+2. On the main menu, a popup auto-appears asking to load mods. (Triggered by [`NMainMenu._Ready`](../sts2-reverse/decompiled_dll/MegaCrit.Sts2.Core.Nodes.Screens.MainMenu/NMainMenu.cs) when `SettingsSave.ModSettings == null && ModManager.Mods.Count > 0`.)
+3. Click "Yes / Load Mods". This creates `ModSettings`, sets `PlayerAgreedToModLoading = true`, and saves settings.
+4. Quit STS2. (The mod is still `Disabled` for this run because `TryLoadMod` ran way before you got to the main menu and the consent didn't exist yet.)
+
+**Launch 2 (mod actually loads)**:
+5. Re-launch STS2. This time `ModManager.Initialize` reads `PlayerAgreedToModLoading = true` and proceeds to actually load the DLL.
+6. Look at the log file for:
+   - `Loading assembly DLL .../mods/sts2gym/sts2gym.dll` — DLL discovered
+   - `Calling initializer method of type Sts2Gym.Sts2GymMod for sts2gym, Version=...` — `[ModInitializer]` invoked
+   - `Finished mod initialization for 'STS2-Gym Bridge' (sts2gym).` — official loader done
+   - ` --- RUNNING MODDED! --- Loaded 1 mods (1 total)` — loader summary
    - `[sts2gym] hello — ModInitializer.Init invoked` — our entry point fired
-   - `[sts2gym] subscriptions: ...` — event subscriptions registered
-5. Start a new run. Look for `[sts2gym] RunStarted #1: ascension=... players=... seed=...`.
-6. Enter combat. Look for `[sts2gym] CombatSetUp #1: encounter=...` and `[sts2gym] TurnStarted #1: ...`.
+   - `[sts2gym] subscriptions: RunStarted, CombatSetUp, TurnStarted, TurnEnded`
+7. Start a new run → expect `[sts2gym] RunStarted #1: ascension=... players=... seed='...'`.
+8. Enter combat → expect `[sts2gym] CombatSetUp #1: encounter=...` and `[sts2gym] TurnStarted #1: ...`.
+
+If on Launch 1 the popup **doesn't** appear, the mod was not detected. Verify with:
+```bash
+ls "$HOME/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/SlayTheSpire2.app/Contents/MacOS/mods/sts2gym/"
+# Expect: sts2gym.dll  sts2gym.json
+```
 
 ### Log file location (macOS)
 

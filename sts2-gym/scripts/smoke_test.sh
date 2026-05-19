@@ -64,10 +64,11 @@ ls -la "$MOD_DST" | awk 'NR>1 {printf "    %s  %s bytes\n", $NF, $5}'
 step "Launch STS2 now"
 cat <<'EOF'
   1. Launch STS2 via Steam or Spotlight.
-  2. If this is the FIRST time you ever loaded a mod for STS2:
-       a. Settings -> Mods -> agree to mod loading (one-time UX gate)
-       b. Quit STS2 and re-launch
-  3. After mod is loaded: start a new run, enter a combat.
+  2. First time only: on the MAIN MENU a popup will AUTO-appear asking
+     "load mods?" — click YES. (This sets PlayerAgreedToModLoading=true
+     so the mod actually loads next time.) Then quit STS2.
+  3. Re-launch STS2. The mod should now actually load.
+  4. Start a new run, enter a combat.
 EOF
 echo
 read -rp "  Press [Enter] once STS2 is launching (or Ctrl-C to abort): " _
