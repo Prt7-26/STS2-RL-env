@@ -161,6 +161,50 @@ class ModBridgeClient:
         """
         return self._post_json("/step", action, timeout=timeout)
 
+    def reset(
+        self,
+        *,
+        encounter: str | None = None,
+        rng_counters: dict[str, Any] | None = None,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """POST a scenario reset (dev plan §2.2 Combat-level — Day-6 Level-A).
+
+        Parameters
+        ----------
+        encounter :
+            If set, jump to this encounter via RunManager.EnterRoomDebug. Pre-condition:
+            the game must already be in a run (Day-6 doesn't drive main-menu UI).
+        rng_counters :
+            If set, restore RunRngSet to these counter values BEFORE jumping to
+            the encounter. Format mirrors what /observe returns under run.rng:
+                {"seed": "MYSEED", "counters": {"shuffle": 12, "combat_targets": 7, ...}}
+            The seed must match the current run's seed (RunRngSet doesn't support
+            mid-run reseed; server returns 400 on mismatch).
+
+        Returns
+        -------
+        Server response body. On success:
+            {"ok": true, "rng_restored"?: true, "encounter"?: str, "phase_after"?: str}
+        """
+        payload: dict[str, Any] = {}
+        if encounter is not None:
+            payload["encounter"] = encounter
+        if rng_counters is not None:
+            payload["rng_counters"] = rng_counters
+        return self._post_json("/reset", payload, timeout=timeout)
+
+    def snapshot_run_rng(self) -> dict[str, Any]:
+        """Return the current run's RNG snapshot in the format /reset expects.
+
+        Convenience method: /observe -> extract run.rng -> reshape as needed.
+        """
+        obs = self.observe()
+        run = obs.get("run") or {}
+        rng = run.get("rng") or {}
+        # /observe gives {"seed": str, "counters": {...}} — same shape /reset wants.
+        return {"seed": rng.get("seed"), "counters": rng.get("counters") or {}}
+
     # ---------- utilities ----------
 
     def wait_until_ready(self, timeout_s: float = 30.0, poll_s: float = 0.5) -> None:

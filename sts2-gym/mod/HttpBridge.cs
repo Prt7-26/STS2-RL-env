@@ -315,6 +315,16 @@ internal static class HttpBridge
                 (status, body) = HandleStep(ctx).GetAwaiter().GetResult();
                 break;
 
+            case "/reset":
+                if (method != "POST")
+                {
+                    status = 405;
+                    body = "{\"ok\":false,\"error\":\"/reset requires POST\"}";
+                    break;
+                }
+                (status, body) = HandleReset(ctx).GetAwaiter().GetResult();
+                break;
+
             default:
                 body = $"{{\"error\":\"unknown endpoint\",\"path\":{JsonEncodedString(path)}}}";
                 status = 404;
@@ -471,29 +481,39 @@ internal static class HttpBridge
 
     private static async Task<(int, string)> HandleStep(HttpListenerContext ctx)
     {
-        // Read the POST body.
+        var (ok, cmd, errBody) = await ReadJsonBody(ctx);
+        if (!ok) return (400, errBody!);
+        return await StepRunner.ExecuteAsync(cmd);
+    }
+
+    private static async Task<(int, string)> HandleReset(HttpListenerContext ctx)
+    {
+        var (ok, cmd, errBody) = await ReadJsonBody(ctx);
+        if (!ok) return (400, errBody!);
+        // ScenarioInjector touches game-thread-only state (RunManager / EncounterModel),
+        // so marshal via GameThread helper just like /step does.
+        return await GameThread.RunOnMainAsync(() => ScenarioInjector.ApplyAsync(cmd));
+    }
+
+    private static async Task<(bool ok, JsonElement cmd, string? errBody)> ReadJsonBody(HttpListenerContext ctx)
+    {
         string raw;
         using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
         {
             raw = await reader.ReadToEndAsync();
         }
-
         if (string.IsNullOrWhiteSpace(raw))
         {
-            return (400, "{\"ok\":false,\"error\":\"empty POST body — expected JSON {\\\"type\\\":...}\"}");
+            return (false, default, "{\"ok\":false,\"error\":\"empty POST body — JSON required\"}");
         }
-
-        JsonElement cmd;
         try
         {
             using var doc = JsonDocument.Parse(raw);
-            cmd = doc.RootElement.Clone();
+            return (true, doc.RootElement.Clone(), null);
         }
         catch (JsonException ex)
         {
-            return (400, "{\"ok\":false,\"error\":\"invalid JSON\",\"message\":" + JsonEncodedString(ex.Message) + "}");
+            return (false, default, "{\"ok\":false,\"error\":\"invalid JSON\",\"message\":" + JsonEncodedString(ex.Message) + "}");
         }
-
-        return await StepRunner.ExecuteAsync(cmd);
     }
 }
