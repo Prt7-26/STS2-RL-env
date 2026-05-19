@@ -1,0 +1,11 @@
+{
+  "id": "sts2gym",
+  "name": "STS2-Gym Bridge",
+  "author": "lingchao726",
+  "version": "0.0.1",
+  "description": "RL/LLM environment bridge for STS2. Pre-MVP smoke test (Day 1 hello-world).",
+  "has_dll": true,
+  "has_pck": false,
+  "dependencies": [],
+  "affects_gameplay": true
+}

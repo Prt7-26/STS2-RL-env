@@ -1,0 +1,29 @@
+# Reverse-engineering artifacts — local only, must not be pushed
+decompiled_dll/
+raw_pck/
+sts2.dll
+0Harmony.dll
+sts2.deps.json
+*.pck
+
+# OS noise
+.DS_Store
+
+# .NET build output
+sts2-gym/mod/bin/
+sts2-gym/mod/obj/
+*.user
+*.suo
+.vs/
+.idea/
+
+# Python build / cache
+sts2-gym/py/__pycache__/
+sts2-gym/py/**/__pycache__/
+sts2-gym/py/*.egg-info/
+sts2-gym/py/.pytest_cache/
+sts2-gym/py/.mypy_cache/
+sts2-gym/py/.ruff_cache/
+sts2-gym/py/build/
+sts2-gym/py/dist/
+*.pyc
