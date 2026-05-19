@@ -195,30 +195,47 @@ if [ "$MODE" = "probe" ]; then
     curl -sS "$URL/observe" -o /tmp/sts2gym_observe.json
     bytes=$(wc -c </tmp/sts2gym_observe.json | tr -d ' ')
     echo "    size: $bytes bytes"
-    python3 -c '
-import json, sys
+    # Heredoc with 'PYEOF' (quoted) — bash does NOT interpolate, so Python can
+    # freely use single/double quotes without escape gymnastics.
+    python3 <<'PYEOF'
+import json
 obs = json.load(open("/tmp/sts2gym_observe.json"))
-print(f"    phase            = {obs.get(\"phase\")!r}")
-print(f"    in_run           = {obs.get(\"in_run\")}")
-print(f"    snapshot_age_ms  = {obs.get(\"snapshot_age_ms\")}")
+print(f"    phase            = {obs.get('phase')!r}")
+print(f"    in_run           = {obs.get('in_run')}")
+print(f"    snapshot_age_ms  = {obs.get('snapshot_age_ms')}")
 print(f"    top-level keys   = {sorted(obs.keys())}")
 run = obs.get("run") or {}
 if run:
-    print(f"    run.schema_version = {run.get(\"schema_version\")}")
-    print(f"    run.ascension      = {run.get(\"ascension\")}")
-    print(f"    run.game_mode      = {run.get(\"game_mode\")}")
-    print(f"    run.players        = {len(run.get(\"players\") or [])}")
+    print(f"    run.schema_version = {run.get('schema_version')}")
+    print(f"    run.ascension      = {run.get('ascension')}")
+    print(f"    run.game_mode      = {run.get('game_mode')!r}")
+    print(f"    run.players        = {len(run.get('players') or [])}")
+    print(f"    run.acts           = {len(run.get('acts') or [])}")
     rng = run.get("rng") or {}
-    print(f"    run.rng.streams    = {len((rng.get(\"counters\") or {}))}")
+    print(f"    run.rng.seed       = {rng.get('seed')!r}")
+    print(f"    run.rng.streams    = {len(rng.get('counters') or {})}")
+    players = run.get("players") or []
+    if players:
+        p = players[0]
+        print(f"    player[0]: character={p.get('character_id')!r} "
+              f"hp={p.get('current_hp')}/{p.get('max_hp')} "
+              f"gold={p.get('gold')} "
+              f"deck={len(p.get('deck') or [])} "
+              f"relics={len(p.get('relics') or [])} "
+              f"potions={len(p.get('potions') or [])}")
 combat = obs.get("combat")
 if combat:
-    print(f"    combat.encounter  = {combat.get(\"encounter\")!r}")
-    print(f"    combat.round      = {combat.get(\"round\")} side={combat.get(\"current_side\")} play_phase={combat.get(\"play_phase\")}")
-    print(f"    combat.enemies    = {combat.get(\"enemy_count\")}")
-'
+    print(f"    combat.encounter  = {combat.get('encounter')!r}")
+    print(f"    combat.round      = {combat.get('round')} "
+          f"side={combat.get('current_side')} "
+          f"play_phase={combat.get('play_phase')}")
+    print(f"    combat.enemies    = {combat.get('enemy_count')} "
+          f"creatures={combat.get('creature_count')}")
+PYEOF
     echo
-    echo "  For deeper inspection: jq . /tmp/sts2gym_observe.json | less"
-    echo "  Or run: cd sts2-gym/py && python3 -m sts2_gym.probe"
+    echo "  Deeper inspection:"
+    echo "    jq . /tmp/sts2gym_observe.json | less"
+    echo "    cd sts2-gym/py && python3 -m sts2_gym.probe"
     exit 0
 fi
 
