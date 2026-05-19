@@ -27,9 +27,11 @@ from sts2_gym.client import ModBridgeClient, StepError
 
 
 def _summarize_action(action: dict[str, Any]) -> str:
-    t = action["type"]
+    t = action.get("type", "?")
     if t == "play_card":
-        s = f"play_card[{action['card_idx']}] {action['card_id']} cost={action['cost']}"
+        # Defensive: use .get() everywhere — fields beyond card_idx are advisory
+        # (server doesn't require them, agent uses them for logging only).
+        s = f"play_card[{action.get('card_idx')}] {action.get('card_id', '?')} cost={action.get('cost', '?')}"
         if action.get("target_combat_id") is not None:
             s += f" -> target_combat_id={action['target_combat_id']}"
         return s
@@ -53,7 +55,15 @@ def _pick_random_action(mask: dict[str, Any], rng: random.Random) -> dict[str, A
     chosen = rng.choice(playables) if playables else next(a for a in actions if a["type"] == "end_turn")
 
     if chosen["type"] == "play_card":
-        out: dict[str, Any] = {"type": "play_card", "card_idx": chosen["card_idx"]}
+        # Wire-protocol fields:  type + card_idx + optional target_combat_id.
+        # Carry card_id / cost along too — server ignores unknown fields, and
+        # the agent loop uses them for human-readable logging.
+        out: dict[str, Any] = {
+            "type": "play_card",
+            "card_idx": chosen["card_idx"],
+            "card_id": chosen.get("card_id"),
+            "cost": chosen.get("cost"),
+        }
         if chosen.get("requires_target"):
             targets = chosen.get("legal_targets") or []
             if not targets:
