@@ -26,6 +26,15 @@
       <HintPath>$(MSBuildThisFileDirectory)../../sts2-reverse/0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="GodotSharp">
+      <!--
+        Needed once we touch Godot Node types (NOverlayStack.Peek returns
+        IOverlayScreen which inherits Godot.Control). Game ships its own
+        runtime copy; we just need the type metadata at build time.
+      -->
+      <HintPath>$(MSBuildThisFileDirectory)../../sts2-reverse/GodotSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

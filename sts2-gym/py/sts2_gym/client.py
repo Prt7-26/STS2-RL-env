@@ -78,21 +78,33 @@ class ModBridgeClient:
     def version(self) -> dict[str, Any]:
         return self._get_json("/version")
 
-    def observe(self) -> dict[str, Any]:
+    def observe(self, partial: bool = False) -> dict[str, Any]:
         """Return the current state snapshot.
 
-        Structure depends on phase. Always present:
-            ``phase``           -- short phase name (e.g. "combat", "main_menu")
-            ``in_run``          -- bool, whether a run is in progress
-            ``snapshot_age_ms`` -- staleness of the cached snapshot at response time
+        Parameters
+        ----------
+        partial :
+            If True, request the PartialObs view (dev plan §2.8): hides
+            information not visible to a human player. Day-4 implementation
+            masks ``combat.players[*].draw_pile`` content (count preserved).
+            Day-5+ will also mask RNG counters and future-reward pool.
 
-        Present when ``in_run`` is True:
-            ``run``    -- full SerializableRun JSON (dev plan §2.1 path a reuse)
-            ``combat`` -- minimal mid-combat extension (only when in combat;
-                          dev plan §2.1 path b will replace this with the full
-                          SerializableCombatState in Day 4)
+        Always-present top-level keys:
+            ``phase``           — short phase name. Day-4 enum:
+                main_menu, game_over, reward, upgrade, transform, enchant,
+                card_select, relic_select, combat, combat_pending, event,
+                shop, rest, treasure, map, between_rooms
+            ``in_run``          — bool
+            ``snapshot_age_ms`` — staleness of the cached snapshot at response time
+            ``partial``         — bool, echoes the mode this payload was built in
+
+        When ``in_run`` is True:
+            ``run``    — full SerializableRun JSON (dev plan §2.1 path a)
+            ``combat`` — full mid-combat extension (dev plan §2.1 path b)
+                         when ``phase`` is combat-y, otherwise absent
         """
-        return self._get_json("/observe")
+        query = "?partial=1" if partial else ""
+        return self._get_json(f"/observe{query}")
 
     # ---------- utilities ----------
 

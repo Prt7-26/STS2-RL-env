@@ -6,6 +6,12 @@ using System.Text.Json;
 using System.Threading;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Nodes.Events.Custom.CrystalSphere;
+using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
+using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
+using MegaCrit.Sts2.Core.Nodes.Screens.Map;
+using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Saves;
@@ -38,8 +44,12 @@ internal static class HttpBridge
     private static Thread? _thread;
     private static volatile bool _running;
 
-    private static volatile string _cachedObservation =
+    // We cache two views built atomically from the same point-in-time game state.
+    // This avoids any cross-thread game-state read from the HTTP listener thread.
+    private const string EmptyObservation =
         "{\"phase\":\"main_menu\",\"in_run\":false,\"snapshot_age_ms\":-1,\"reason\":\"no snapshot yet\"}";
+    private static volatile string _cachedFullObs = EmptyObservation;
+    private static volatile string _cachedPartialObs = EmptyObservation;
     private static long _lastSnapshotUtcMs;
 
     public static int Port { get; private set; }
@@ -75,23 +85,26 @@ internal static class HttpBridge
 
     /// <summary>
     /// Refresh the cached observation snapshot. Called from game-thread event handlers.
+    /// Builds BOTH the FullInfo and PartialObs views from the same in-memory game state
+    /// — atomic from the client's perspective.
     /// Must be cheap — runs in the hot path of TurnStarted / TurnEnded.
     /// </summary>
     public static void RefreshObservation()
     {
         try
         {
-            string json = BuildObservation();
-            _cachedObservation = json;
+            _cachedFullObs = BuildObservation(partial: false);
+            _cachedPartialObs = BuildObservation(partial: true);
             _lastSnapshotUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
         catch (Exception ex)
         {
             // Do not let serialization failures cascade into the game's event chain.
             Log.Error($"{Tag} RefreshObservation failed: {ex.Message}");
-            _cachedObservation =
-                "{\"phase\":\"error\",\"in_run\":false,\"error\":\"snapshot build failed\",\"message\":" +
+            var err = "{\"phase\":\"error\",\"in_run\":false,\"error\":\"snapshot build failed\",\"message\":" +
                 JsonEncodedString(ex.Message) + "}";
+            _cachedFullObs = err;
+            _cachedPartialObs = err;
         }
     }
 
@@ -120,11 +133,11 @@ internal static class HttpBridge
         }
     }
 
-    private static string BuildObservation()
+    private static string BuildObservation(bool partial)
     {
         if (!RunManager.Instance.IsInProgress)
         {
-            return "{\"phase\":\"main_menu\",\"in_run\":false,\"snapshot_age_ms\":0}";
+            return $"{{\"phase\":\"main_menu\",\"in_run\":false,\"snapshot_age_ms\":0,\"partial\":{(partial ? "true" : "false")}}}";
         }
 
         // Reuse game's source-generated JSON context via the public utility (dev plan §2.1 path a).
@@ -132,10 +145,13 @@ internal static class HttpBridge
         var runJson = JsonSerializer.Serialize(save, JsonSerializationUtility.GetTypeInfo<SerializableRun>());
 
         var phase = ResolvePhase();
-        var combatJson = BuildCombatExtension();
+        var combatJson = CombatSnapshot.Build(partial);
 
-        var sb = new StringBuilder(runJson.Length + 256);
-        sb.Append("{\"phase\":\"").Append(phase).Append("\",\"in_run\":true,\"snapshot_age_ms\":0");
+        var sb = new StringBuilder(runJson.Length + 4096);
+        sb.Append("{\"phase\":\"").Append(phase).Append("\"");
+        sb.Append(",\"in_run\":true");
+        sb.Append(",\"snapshot_age_ms\":0");
+        sb.Append(",\"partial\":").Append(partial ? "true" : "false");
         if (combatJson != null)
         {
             sb.Append(",\"combat\":").Append(combatJson);
@@ -145,15 +161,40 @@ internal static class HttpBridge
     }
 
     /// <summary>
-    /// Day-3 minimal phase resolver. Day-4 milestone will expand to the full 12-phase enum
-    /// (dev plan §3.1). For now we only distinguish main_menu / combat / between_rooms /
-    /// game_over — enough to validate the snapshot pipeline.
+    /// Day-4 12-phase resolver (dev plan §3.1). Order matters: screen overlays beat room
+    /// type. Reads several Godot singletons, so this MUST be called on the game thread
+    /// (event handlers honor this).
     /// </summary>
     private static string ResolvePhase()
     {
         if (!RunManager.Instance.IsInProgress) return "main_menu";
         if (RunManager.Instance.IsGameOver) return "game_over";
+
+        // Screen overlay takes precedence — these are modal popups stacked over
+        // the active room. Per AutoSlayer's _screenHandlers dictionary, these 12
+        // screen types cover all P0 phases.
+        var overlay = NOverlayStack.Instance?.Peek();
+        if (overlay != null)
+        {
+            var t = overlay.GetType();
+            if (t == typeof(NGameOverScreen)) return "game_over";
+            if (t == typeof(NRewardsScreen)) return "reward";
+            if (t == typeof(NCardRewardSelectionScreen)) return "reward";
+            if (t == typeof(NDeckUpgradeSelectScreen)) return "upgrade";
+            if (t == typeof(NDeckTransformSelectScreen)) return "transform";
+            if (t == typeof(NDeckEnchantSelectScreen)) return "enchant";
+            if (t == typeof(NDeckCardSelectScreen)) return "card_select";
+            if (t == typeof(NSimpleCardSelectScreen)) return "card_select";
+            if (t == typeof(NChooseACardSelectionScreen)) return "card_select";
+            if (t == typeof(NChooseABundleSelectionScreen)) return "card_select";
+            if (t == typeof(NChooseARelicSelection)) return "relic_select";
+            if (t == typeof(NCrystalSphereScreen)) return "event";
+        }
+
         if (CombatManager.Instance.IsInProgress) return "combat";
+
+        // NMapScreen is a regular non-modal screen (not in overlay stack).
+        if (NMapScreen.Instance?.IsOpen == true) return "map";
 
         var room = RunManager.Instance.DebugOnlyGetState()?.CurrentRoom;
         var roomType = room?.RoomType ?? RoomType.Unassigned;
@@ -166,28 +207,6 @@ internal static class HttpBridge
             RoomType.Treasure => "treasure",
             _ => "between_rooms",
         };
-    }
-
-    /// <summary>
-    /// Build a minimal mid-combat extension (dev plan §2.1 path b — full SerializableCombatState
-    /// is Day 4 milestone). For now we expose just the most-asked-for fields so Python side
-    /// can confirm it sees live mid-combat data.
-    /// </summary>
-    private static string? BuildCombatExtension()
-    {
-        var combat = CombatManager.Instance.DebugOnlyGetState();
-        if (combat == null) return null;
-
-        var sb = new StringBuilder(256);
-        sb.Append("{");
-        sb.Append("\"round\":").Append(combat.RoundNumber);
-        sb.Append(",\"current_side\":\"").Append(combat.CurrentSide).Append("\"");
-        sb.Append(",\"play_phase\":").Append(CombatManager.Instance.IsPlayPhase ? "true" : "false");
-        sb.Append(",\"encounter\":").Append(JsonEncodedString(combat.Encounter?.Id.Entry));
-        sb.Append(",\"enemy_count\":").Append(combat.Enemies.Count);
-        sb.Append(",\"creature_count\":").Append(combat.Creatures.Count);
-        sb.Append("}");
-        return sb.ToString();
     }
 
     private static string JsonEncodedString(string? s)
@@ -267,7 +286,11 @@ internal static class HttpBridge
                 break;
 
             case "/observe":
-                body = WithFreshAge(_cachedObservation);
+                // ?partial=1 -> PartialObs view (dev plan §2.8: hides draw_pile contents, etc).
+                // No query / partial=0 -> FullInfo view.
+                var partialFlag = ctx.Request.QueryString["partial"];
+                bool partial = partialFlag == "1" || partialFlag == "true";
+                body = WithFreshAge(partial ? _cachedPartialObs : _cachedFullObs);
                 status = 200;
                 break;
 
