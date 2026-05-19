@@ -48,12 +48,12 @@ public static class Sts2GymMod
         {
             Log.Info($"{LogTag} RunStarted #{_runsObserved}: ascension={run.AscensionLevel} players={run.Players.Count} seed='{run.Rng.StringSeed}' acts={run.Acts.Count}");
 
-            // FastMode toggle. dev plan §2.4 / §11 P1 milestone: verify Instant is bit-exact equivalent
-            // to Normal for trajectory determinism. We flip the switch here; Day 2 实测 compares
-            // CombatHistory event sequences across modes.
+            // FastMode toggle. Day-1 实测发现 Instant 触发 NCreature.AnimDie 内 Node.MoveChild(null) 报 ERROR,
+            // 这正是 dev plan §2.4 / 任务 C 标注的 AutoSlayer 也避开 Instant 的 corner case 之一。
+            // 暂时降到 Fast (animation 仍快 ~2x), P1 milestone 再考虑用 Harmony 修 AnimDie 的 null 引用以重新启用 Instant.
             var prevFast = SaveManager.Instance.PrefsSave.FastMode;
-            SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
-            Log.Info($"{LogTag} FastMode: {prevFast} -> Instant");
+            SaveManager.Instance.PrefsSave.FastMode = FastModeType.Fast;
+            Log.Info($"{LogTag} FastMode: {prevFast} -> Fast (Instant deferred — triggers AnimDie null ref)");
 
             // dev plan §2.1 path (a): SerializableRun reuse for between-rooms state.
             // This call should be near-free; confirm it doesn't blow up at run-start.

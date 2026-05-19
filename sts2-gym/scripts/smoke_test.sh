@@ -135,7 +135,17 @@ green "  Active log: $ACTIVE_LOG"
 
 # ---------- tail with filter ----------
 step "Tailing log — Ctrl-C to stop"
-echo "  Filter: 'sts2gym | Loaded.*mod | MOD_ERROR | mods? disabled | RUNNING MODDED'"
+# Filter buckets:
+#   (a) Our mod's own [sts2gym] lines
+#   (b) Mega Crit mod loader lifecycle messages
+#   (c) Game-level ERROR / WARN / exception lines (so we surface bugs in our mod
+#       or in game-vanilla code we trigger via FastMode / ScenarioInjector / etc)
+#
+# Note: filter is case-sensitive so 'mod' doesn't false-match 'Model', 'Modding',
+# 'CardModel', etc. Per-token uppercase MOD_ERROR is matched by the explicit token.
+FILTER='sts2gym|Loaded [0-9]+ mods|MOD_ERROR|mods? disabled|RUNNING MODDED|Found mod manifest|Loading assembly DLL|Calling initializer method|Finished mod initialization|^ERROR:|Caught .*[Ee]xception|\[ERROR\]|\[WARN\].*[Mm]od'
+echo "  Filter (case-sensitive):"
+echo "    $FILTER"
 echo "  ----------------------------------------------------------------"
 echo
-tail -F "$ACTIVE_LOG" | grep --line-buffered -E -i 'sts2gym|Loaded.*mod|MOD_ERROR|mods? disabled|RUNNING MODDED'
+tail -F "$ACTIVE_LOG" | grep --line-buffered -E "$FILTER"
