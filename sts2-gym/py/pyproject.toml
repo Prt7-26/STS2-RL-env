@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sts2-gym"
+version = "0.0.1"
+description = "Slay the Spire 2 RL/LLM environment bridge (pre-MVP)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "lingchao726" }]
+keywords = ["reinforcement-learning", "llm-agent", "slay-the-spire", "benchmark", "gymnasium"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+]
+
+# Day-3 dependency policy: stdlib only. The mod runs the HTTP server and we use
+# urllib on the client. Bringing in httpx / requests / gymnasium happens at the
+# milestones where we actually need them (Day 4+ env wrapper, P1 vector env).
+dependencies = []
+
+[project.optional-dependencies]
+# Reserved for Day 4+ when we wrap as gymnasium.Env.
+gym = ["gymnasium>=0.29"]
+# Reserved for LLM eval examples.
+llm = ["anthropic>=0.40", "openai>=1.50"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sts2_gym*"]

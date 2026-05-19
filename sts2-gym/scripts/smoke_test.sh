@@ -1,16 +1,35 @@
 #!/bin/bash
-# sts2-gym Day-1 smoke test:
+# sts2-gym smoke test:
 #   1. dotnet build -c Release
 #   2. copy sts2gym.dll + manifest to STS2 install
-#   3. wait for game launch, then tail logs filtered to [sts2gym] lines
+#   3. wait for game launch, then either tail logs OR probe HTTP bridge
 #
-# Usage:
-#   ./sts2-gym/scripts/smoke_test.sh
+# Modes (default = tail-logs):
+#   ./sts2-gym/scripts/smoke_test.sh              # build + deploy + tail logs
+#   ./sts2-gym/scripts/smoke_test.sh --probe      # build + deploy + curl /health /observe
+#   ./sts2-gym/scripts/smoke_test.sh --no-game    # build + deploy only, skip launch prompt
 #
 # Override STS2 install path:
 #   STS2_INSTALL=/some/other/path ./sts2-gym/scripts/smoke_test.sh
+# Override mod port:
+#   STS2GYM_PORT=8888 ./sts2-gym/scripts/smoke_test.sh --probe
 
 set -euo pipefail
+
+MODE="${1:-tail}"
+case "$MODE" in
+    --probe)   MODE="probe" ;;
+    --no-game) MODE="no-game" ;;
+    --tail|tail|"")    MODE="tail" ;;
+    -h|--help)
+        sed -n '2,15p' "$0"
+        exit 0
+        ;;
+    *)
+        echo "Unknown mode: $MODE  (try --probe, --tail, --no-game, --help)" >&2
+        exit 2
+        ;;
+esac
 
 # ---------- paths ----------
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -60,6 +79,12 @@ cp -f "$DLL" "$MOD_DST/"
 echo "  Deployed files:"
 ls -la "$MOD_DST" | awk 'NR>1 {printf "    %s  %s bytes\n", $NF, $5}'
 
+if [ "$MODE" = "no-game" ]; then
+    step "Done (--no-game, skipping game launch)"
+    echo "  Mod is deployed. Launch STS2 manually to verify."
+    exit 0
+fi
+
 # ---------- launch prompt ----------
 step "Launch STS2 now"
 cat <<'EOF'
@@ -68,7 +93,8 @@ cat <<'EOF'
      "load mods?" — click YES. (This sets PlayerAgreedToModLoading=true
      so the mod actually loads next time.) Then quit STS2.
   3. Re-launch STS2. The mod should now actually load.
-  4. Start a new run, enter a combat.
+  4. For --probe mode: get past the main menu into a run (so /observe
+     has real data). For --tail mode: any state works.
 EOF
 echo
 read -rp "  Press [Enter] once STS2 is launching (or Ctrl-C to abort): " _
@@ -132,6 +158,69 @@ EOF
 fi
 
 green "  Active log: $ACTIVE_LOG"
+
+# ---------- probe mode: poll /health then dump /observe ----------
+if [ "$MODE" = "probe" ]; then
+    PORT="${STS2GYM_PORT:-7777}"
+    URL="http://127.0.0.1:$PORT"
+    step "Probing HTTP bridge at $URL (poll /health up to ~30s)"
+
+    HEALTH_OK=0
+    for _ in $(seq 1 60); do
+        if curl -sS -m 1 -o /dev/null "$URL/health" 2>/dev/null; then
+            HEALTH_OK=1
+            break
+        fi
+        printf "."
+        sleep 0.5
+    done
+    echo
+
+    if [ "$HEALTH_OK" != "1" ]; then
+        red "  /health did not respond. Verify:"
+        echo "    - STS2 is running and you got past the 'load mods?' popup"
+        echo "    - log shows '[sts2gym] hello' and 'Loaded 1 mods'"
+        echo "    - port lockfile contents: $(cat /tmp/sts2_gym.port 2>/dev/null || echo '<missing>')"
+        exit 1
+    fi
+
+    echo
+    green "  ✓ /health"
+    curl -sS "$URL/health" | python3 -m json.tool 2>/dev/null || curl -sS "$URL/health"
+    echo
+    green "  ✓ /version"
+    curl -sS "$URL/version" | python3 -m json.tool 2>/dev/null || curl -sS "$URL/version"
+    echo
+    green "  ✓ /observe (saving full payload to /tmp/sts2gym_observe.json)"
+    curl -sS "$URL/observe" -o /tmp/sts2gym_observe.json
+    bytes=$(wc -c </tmp/sts2gym_observe.json | tr -d ' ')
+    echo "    size: $bytes bytes"
+    python3 -c '
+import json, sys
+obs = json.load(open("/tmp/sts2gym_observe.json"))
+print(f"    phase            = {obs.get(\"phase\")!r}")
+print(f"    in_run           = {obs.get(\"in_run\")}")
+print(f"    snapshot_age_ms  = {obs.get(\"snapshot_age_ms\")}")
+print(f"    top-level keys   = {sorted(obs.keys())}")
+run = obs.get("run") or {}
+if run:
+    print(f"    run.schema_version = {run.get(\"schema_version\")}")
+    print(f"    run.ascension      = {run.get(\"ascension\")}")
+    print(f"    run.game_mode      = {run.get(\"game_mode\")}")
+    print(f"    run.players        = {len(run.get(\"players\") or [])}")
+    rng = run.get("rng") or {}
+    print(f"    run.rng.streams    = {len((rng.get(\"counters\") or {}))}")
+combat = obs.get("combat")
+if combat:
+    print(f"    combat.encounter  = {combat.get(\"encounter\")!r}")
+    print(f"    combat.round      = {combat.get(\"round\")} side={combat.get(\"current_side\")} play_phase={combat.get(\"play_phase\")}")
+    print(f"    combat.enemies    = {combat.get(\"enemy_count\")}")
+'
+    echo
+    echo "  For deeper inspection: jq . /tmp/sts2gym_observe.json | less"
+    echo "  Or run: cd sts2-gym/py && python3 -m sts2_gym.probe"
+    exit 0
+fi
 
 # ---------- tail with filter ----------
 step "Tailing log — Ctrl-C to stop"

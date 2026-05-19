@@ -33,6 +33,10 @@ public static class Sts2GymMod
             CombatManager.Instance.TurnEnded += OnTurnEnded;
 
             Log.Info($"{LogTag} subscriptions: RunStarted, CombatSetUp, TurnStarted, TurnEnded");
+
+            // Day-3 P0 milestone: start the HTTP bridge so Python side can probe state.
+            // HttpListener does NOT depend on Godot scene tree, safe to start in ExecuteVeryEarly.
+            HttpBridge.Start();
         }
         catch (Exception ex)
         {
@@ -59,6 +63,8 @@ public static class Sts2GymMod
             // This call should be near-free; confirm it doesn't blow up at run-start.
             var save = RunManager.Instance.ToSave(preFinishedRoom: null);
             Log.Info($"{LogTag} SerializableRun snapshot OK: schema={save.SchemaVersion} ascension={save.Ascension} game_mode={save.GameMode} rng_streams={save.SerializableRng.Counters.Count} players={save.Players.Count}");
+
+            HttpBridge.RefreshObservation();
         }
         catch (Exception ex)
         {
@@ -72,6 +78,7 @@ public static class Sts2GymMod
         try
         {
             Log.Info($"{LogTag} CombatSetUp #{_combatsObserved}: encounter={s.Encounter?.Id.Entry ?? "<none>"} enemies={s.Enemies.Count} round={s.RoundNumber}");
+            HttpBridge.RefreshObservation();
         }
         catch (Exception ex)
         {
@@ -85,6 +92,7 @@ public static class Sts2GymMod
         try
         {
             Log.Info($"{LogTag} TurnStarted #{_turnsObserved}: round={s.RoundNumber} side={s.CurrentSide} playPhase={CombatManager.Instance.IsPlayPhase}");
+            HttpBridge.RefreshObservation();
         }
         catch (Exception ex)
         {
@@ -97,6 +105,7 @@ public static class Sts2GymMod
         try
         {
             Log.Info($"{LogTag} TurnEnded: round={s.RoundNumber} side={s.CurrentSide}");
+            HttpBridge.RefreshObservation();
         }
         catch (Exception ex)
         {
