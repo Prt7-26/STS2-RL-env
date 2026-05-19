@@ -50,12 +50,20 @@ internal static class HttpBridge
     private static Thread? _thread;
     private static volatile bool _running;
 
-    // We cache two views built atomically from the same point-in-time game state.
-    // This avoids any cross-thread game-state read from the HTTP listener thread.
+    // We cache views built atomically from the same point-in-time game state.
+    // This avoids any cross-thread game-state read from the HTTP listener thread
+    // AND eliminates races between /observe and /action_mask — both serve from
+    // the same snapshot. The action_mask is included in this set because the
+    // agent picks its action based on it; if it raced with animation queue, the
+    // /step that followed would land in a different state than the snapshot
+    // implied, breaking trajectory determinism.
     private const string EmptyObservation =
         "{\"phase\":\"main_menu\",\"in_run\":false,\"snapshot_age_ms\":-1,\"reason\":\"no snapshot yet\"}";
+    private const string EmptyActionMask =
+        "{\"phase\":\"not_combat\",\"actions\":[]}";
     private static volatile string _cachedFullObs = EmptyObservation;
     private static volatile string _cachedPartialObs = EmptyObservation;
+    private static volatile string _cachedActionMask = EmptyActionMask;
     private static long _lastSnapshotUtcMs;
 
     public static int Port { get; private set; }
@@ -101,6 +109,7 @@ internal static class HttpBridge
         {
             _cachedFullObs = BuildObservation(partial: false);
             _cachedPartialObs = BuildObservation(partial: true);
+            _cachedActionMask = BuildActionMask();
             _lastSnapshotUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
         catch (Exception ex)
@@ -111,6 +120,7 @@ internal static class HttpBridge
                 JsonEncodedString(ex.Message) + "}";
             _cachedFullObs = err;
             _cachedPartialObs = err;
+            _cachedActionMask = "{\"phase\":\"error\",\"actions\":[]}";
         }
     }
 
@@ -302,7 +312,13 @@ internal static class HttpBridge
                 break;
 
             case "/action_mask":
-                (status, body) = BuildActionMask();
+                // Serve from cache (built atomically with /observe in RefreshObservation).
+                // Live read would race with animation-queue: /observe sees post-event state,
+                // /action_mask sees mid-animation state, agent picks action from a mask that
+                // doesn't match its observation, /step lands in a different reality. That race
+                // is exactly what Day-6.1 determinism test diverged on.
+                body = _cachedActionMask;
+                status = 200;
                 break;
 
             case "/step":
@@ -366,10 +382,14 @@ internal static class HttpBridge
     /// <summary>
     /// Build the legal action set for the current state. Day-5 minimal scope:
     /// combat phase only — play_card + end_turn. Day-6+ adds non-combat phase
-    /// actions (map nav, event choice, shop, reward, etc.) via the
-    /// ICardSelector + 5-selector stack model (dev plan §2.3 / §3.4).
+    /// actions via the ICardSelector + 5-selector stack model (dev plan §2.3 / §3.4).
+    ///
+    /// Called from RefreshObservation (game thread, in event handler context) —
+    /// MUST NOT be called from HTTP thread. HTTP handler serves _cachedActionMask
+    /// instead. This keeps action_mask atomic with /observe (Day-6.2 fix —
+    /// previously action_mask was a live read and raced with animation queue).
     /// </summary>
-    private static (int, string) BuildActionMask()
+    private static string BuildActionMask()
     {
         var sb = new StringBuilder(1024);
         sb.Append('{');
@@ -377,14 +397,14 @@ internal static class HttpBridge
         if (!CombatManager.Instance.IsInProgress)
         {
             sb.Append("\"phase\":\"not_combat\",\"actions\":[]}");
-            return (200, sb.ToString());
+            return sb.ToString();
         }
 
         var combat = CombatManager.Instance.DebugOnlyGetState();
         if (combat == null)
         {
             sb.Append("\"phase\":\"combat\",\"actions\":[],\"error\":\"combat state null\"}");
-            return (200, sb.ToString());
+            return sb.ToString();
         }
 
         var inPlayPhase = CombatManager.Instance.IsPlayPhase;
@@ -398,7 +418,7 @@ internal static class HttpBridge
             // Not player's turn — no legal actions to take. Client should /observe
             // and re-poll /action_mask after TurnStarted fires.
             sb.Append("]}");
-            return (200, sb.ToString());
+            return sb.ToString();
         }
 
         var player = combat.Players.FirstOrDefault();
@@ -406,7 +426,7 @@ internal static class HttpBridge
         if (pcs == null)
         {
             sb.Append("]}");
-            return (200, sb.ToString());
+            return sb.ToString();
         }
 
         var hittableEnemies = combat.HittableEnemies.ToList();
@@ -451,7 +471,7 @@ internal static class HttpBridge
         sb.Append("{\"type\":\"end_turn\"}");
 
         sb.Append("]}");
-        return (200, sb.ToString());
+        return sb.ToString();
     }
 
     private static System.Collections.Generic.List<Creature> LegalTargetsFor(
