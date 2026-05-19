@@ -21,12 +21,20 @@ import os
 import time
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 DEFAULT_PORT = int(os.environ.get("STS2GYM_PORT", "7777"))
 DEFAULT_HOST = os.environ.get("STS2GYM_HOST", "127.0.0.1")
 PORT_LOCKFILE = Path(os.environ.get("STS2GYM_PORT_LOCKFILE", "/tmp/sts2_gym.port"))
+
+
+class StepError(Exception):
+    """Raised on /step or other write-path failures (non-2xx HTTP)."""
+    def __init__(self, status: int, payload: dict[str, Any]):
+        self.status = status
+        self.payload = payload
+        super().__init__(f"step failed: status={status} payload={payload}")
 
 
 def read_port_lockfile(path: Path = PORT_LOCKFILE) -> int | None:
@@ -69,6 +77,27 @@ class ModBridgeClient:
         with urlopen(f"{self.base}{path}", timeout=self.timeout) as r:
             return json.loads(r.read().decode("utf-8"))
 
+    def _post_json(self, path: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
+        """POST JSON, return parsed response. On non-2xx, raises StepError with parsed body."""
+        body_bytes = json.dumps(payload).encode("utf-8")
+        req = Request(
+            f"{self.base}{path}",
+            data=body_bytes,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=timeout if timeout is not None else self.timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except HTTPError as e:
+            # Server returned 4xx/5xx — try to parse body and raise rich error.
+            err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+            try:
+                err_json = json.loads(err_body)
+            except (json.JSONDecodeError, ValueError):
+                err_json = {"raw": err_body}
+            raise StepError(status=e.code, payload=err_json) from None
+
     # ---------- endpoint wrappers ----------
 
     def health(self) -> dict[str, Any]:
@@ -105,6 +134,32 @@ class ModBridgeClient:
         """
         query = "?partial=1" if partial else ""
         return self._get_json(f"/observe{query}")
+
+    def action_mask(self) -> dict[str, Any]:
+        """Return the legal-action enumeration for the current state.
+
+        Day-5 scope: combat phase only. Returns
+            {phase, play_phase, round, actions: [{type, ...}]}
+        where each action is either
+            {"type": "play_card", "card_idx": int, "card_id": str, "cost": int,
+             "target_type": str, "requires_target": bool,
+             "legal_targets": [{"combat_id": int, "name": str}, ...]}
+        or
+            {"type": "end_turn"}
+        """
+        return self._get_json("/action_mask")
+
+    def step(self, action: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
+        """POST an action to /step, await completion, return the response.
+
+        Day-5 supported action types:
+            {"type": "play_card", "card_idx": int, "target_combat_id": int|None}
+            {"type": "end_turn"}
+
+        Raises StepError on 4xx/5xx with the server's structured error payload
+        (e.g. unplayable_reason, target_combat_id not found).
+        """
+        return self._post_json("/step", action, timeout=timeout)
 
     # ---------- utilities ----------
 

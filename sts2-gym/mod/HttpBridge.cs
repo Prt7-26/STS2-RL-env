@@ -1,11 +1,17 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Events.Custom.CrystalSphere;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
@@ -270,6 +276,7 @@ internal static class HttpBridge
     private static void Handle(HttpListenerContext ctx)
     {
         var path = ctx.Request.Url?.AbsolutePath ?? "/";
+        var method = ctx.Request.HttpMethod;
         string body;
         int status;
 
@@ -292,6 +299,20 @@ internal static class HttpBridge
                 bool partial = partialFlag == "1" || partialFlag == "true";
                 body = WithFreshAge(partial ? _cachedPartialObs : _cachedFullObs);
                 status = 200;
+                break;
+
+            case "/action_mask":
+                (status, body) = BuildActionMask();
+                break;
+
+            case "/step":
+                if (method != "POST")
+                {
+                    status = 405;
+                    body = "{\"ok\":false,\"error\":\"/step requires POST\"}";
+                    break;
+                }
+                (status, body) = HandleStep(ctx).GetAwaiter().GetResult();
                 break;
 
             default:
@@ -328,5 +349,151 @@ internal static class HttpBridge
         if (idx < 0) return cached;
         var age = SnapshotAgeMs();
         return cached.Substring(0, idx) + "\"snapshot_age_ms\":" + age + cached.Substring(idx + Sentinel.Length);
+    }
+
+    // -------------------- /action_mask --------------------
+
+    /// <summary>
+    /// Build the legal action set for the current state. Day-5 minimal scope:
+    /// combat phase only — play_card + end_turn. Day-6+ adds non-combat phase
+    /// actions (map nav, event choice, shop, reward, etc.) via the
+    /// ICardSelector + 5-selector stack model (dev plan §2.3 / §3.4).
+    /// </summary>
+    private static (int, string) BuildActionMask()
+    {
+        var sb = new StringBuilder(1024);
+        sb.Append('{');
+
+        if (!CombatManager.Instance.IsInProgress)
+        {
+            sb.Append("\"phase\":\"not_combat\",\"actions\":[]}");
+            return (200, sb.ToString());
+        }
+
+        var combat = CombatManager.Instance.DebugOnlyGetState();
+        if (combat == null)
+        {
+            sb.Append("\"phase\":\"combat\",\"actions\":[],\"error\":\"combat state null\"}");
+            return (200, sb.ToString());
+        }
+
+        var inPlayPhase = CombatManager.Instance.IsPlayPhase;
+        sb.Append("\"phase\":\"combat\"");
+        sb.Append(",\"play_phase\":").Append(inPlayPhase ? "true" : "false");
+        sb.Append(",\"round\":").Append(combat.RoundNumber);
+
+        sb.Append(",\"actions\":[");
+        if (!inPlayPhase)
+        {
+            // Not player's turn — no legal actions to take. Client should /observe
+            // and re-poll /action_mask after TurnStarted fires.
+            sb.Append("]}");
+            return (200, sb.ToString());
+        }
+
+        var player = combat.Players.FirstOrDefault();
+        var pcs = player?.PlayerCombatState;
+        if (pcs == null)
+        {
+            sb.Append("]}");
+            return (200, sb.ToString());
+        }
+
+        var hittableEnemies = combat.HittableEnemies.ToList();
+        var alliesAlive = combat.Allies.Where(a => a.IsAlive).ToList();
+        var playerCreature = combat.PlayerCreatures.FirstOrDefault(c => c.IsAlive);
+
+        // ----- play_card actions -----
+        bool firstAction = true;
+        for (int i = 0; i < pcs.Hand.Cards.Count; i++)
+        {
+            var card = pcs.Hand.Cards[i];
+            bool canPlay;
+            try { canPlay = card.CanPlay(out _, out _); }
+            catch { canPlay = false; }
+            if (!canPlay) continue;
+
+            // Enumerate legal targets for this card. Empty list = self / no-target /
+            // AoE / random — caller passes null target.
+            var legalTargets = LegalTargetsFor(card, hittableEnemies, alliesAlive, playerCreature);
+
+            if (!firstAction) sb.Append(',');
+            sb.Append("{\"type\":\"play_card\",\"card_idx\":").Append(i);
+            sb.Append(",\"card_id\":").Append(JsonEncodedString(card.Id.Entry));
+            sb.Append(",\"cost\":").Append(card.EnergyCost.GetResolved());
+            sb.Append(",\"target_type\":\"").Append(card.TargetType).Append('"');
+            sb.Append(",\"requires_target\":").Append(RequiresTarget(card.TargetType) ? "true" : "false");
+            sb.Append(",\"legal_targets\":[");
+            for (int t = 0; t < legalTargets.Count; t++)
+            {
+                if (t > 0) sb.Append(',');
+                var tc = legalTargets[t];
+                sb.Append("{\"combat_id\":").Append(tc.CombatId);
+                sb.Append(",\"name\":").Append(JsonEncodedString(tc.Monster?.Id.Entry ?? tc.Player?.Character.Id.Entry));
+                sb.Append("}");
+            }
+            sb.Append("]}");
+            firstAction = false;
+        }
+
+        // ----- end_turn -----
+        if (!firstAction) sb.Append(',');
+        sb.Append("{\"type\":\"end_turn\"}");
+
+        sb.Append("]}");
+        return (200, sb.ToString());
+    }
+
+    private static System.Collections.Generic.List<Creature> LegalTargetsFor(
+        CardModel card,
+        System.Collections.Generic.List<Creature> hittableEnemies,
+        System.Collections.Generic.List<Creature> aliveAllies,
+        Creature? playerCreature)
+    {
+        return card.TargetType switch
+        {
+            TargetType.AnyEnemy => hittableEnemies.Where(e => card.CanPlayTargeting(e)).ToList(),
+            TargetType.AnyAlly => aliveAllies.Where(a => card.CanPlayTargeting(a)).ToList(),
+            TargetType.AnyPlayer => aliveAllies.Where(a => a.IsPlayer && card.CanPlayTargeting(a)).ToList(),
+            // Self / AllEnemies / RandomEnemy / AllAllies / TargetedNoCreature / Osty / None
+            //   -> no caller-supplied target. We emit an empty list and the client
+            //      knows not to pass target_combat_id.
+            _ => new System.Collections.Generic.List<Creature>(),
+        };
+    }
+
+    private static bool RequiresTarget(TargetType t)
+    {
+        return t == TargetType.AnyEnemy || t == TargetType.AnyAlly || t == TargetType.AnyPlayer;
+    }
+
+    // -------------------- /step --------------------
+
+    private static async Task<(int, string)> HandleStep(HttpListenerContext ctx)
+    {
+        // Read the POST body.
+        string raw;
+        using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
+        {
+            raw = await reader.ReadToEndAsync();
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return (400, "{\"ok\":false,\"error\":\"empty POST body — expected JSON {\\\"type\\\":...}\"}");
+        }
+
+        JsonElement cmd;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            cmd = doc.RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            return (400, "{\"ok\":false,\"error\":\"invalid JSON\",\"message\":" + JsonEncodedString(ex.Message) + "}");
+        }
+
+        return await StepRunner.ExecuteAsync(cmd);
     }
 }

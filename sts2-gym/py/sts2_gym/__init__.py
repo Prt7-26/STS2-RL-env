@@ -15,7 +15,7 @@ Quick start (assumes STS2 is running with the mod loaded):
 """
 from __future__ import annotations
 
-from sts2_gym.client import DEFAULT_PORT, ModBridgeClient
+from sts2_gym.client import DEFAULT_PORT, ModBridgeClient, StepError
 
-__all__ = ["ModBridgeClient", "DEFAULT_PORT"]
+__all__ = ["ModBridgeClient", "StepError", "DEFAULT_PORT"]
 __version__ = "0.0.1"

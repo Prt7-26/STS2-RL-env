@@ -273,6 +273,9 @@ internal static class CombatSnapshot
         sb.Append(",\"upgrade_level\":").Append(card.CurrentUpgradeLevel);
         sb.Append(",\"is_upgraded\":").Append(card.IsUpgraded ? "true" : "false");
         sb.Append(",\"is_upgradable\":").Append(card.IsUpgradable ? "true" : "false");
+        // TargetType drives action-codec target enumeration (dev plan §3.4).
+        // Python side uses this to know whether to require a target_combat_id.
+        sb.Append(",\"target_type\":\"").Append(card.TargetType).Append('"');
         // CanPlay is the action-mask oracle (dev plan §2.3) — expose so clients
         // know the legal hand subset without re-deriving it.
         if (card.Pile?.IsCombatPile == true)
