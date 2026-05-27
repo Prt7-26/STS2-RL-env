@@ -665,55 +665,63 @@ internal static class NonCombatHandlers
             return (409, $"{{\"ok\":false,\"error\":\"option disabled\",\"option_id\":{JsonStr(option.OptionId)}}}");
 
         Log.Info($"{Tag} rest choose option_idx={idx} option_id={option.OptionId}");
-        // Day-10.L: don't await option.OnSelect to completion. SMITH (and any
-        // future rest option that picks cards) opens a sub-screen routed
-        // through CardSelectCmd → our ICardSelector → blocks until /step
-        // select_pick. But we're holding _stepLock here so select_pick can't
-        // proceed → full deadlock, /observe hangs because HTTP listener is
-        // single-threaded. Same pattern as PlayCardAsync (Day-8.1) and
-        // ChooseEventOptionAsync (Day-10.E): short wait + early return.
-        Task<bool> selectTask;
+
+        // Day-10.M: route via NRestSiteButton click, NOT direct option.OnSelect.
+        // OnSelect skips the button's DisableOptions + AfterSelectingOption logic
+        // (see NRestSiteButton.SelectOption). Symptoms when bypassed:
+        //   1. Options stay is_enabled=True forever → agent keeps re-picking.
+        //   2. Player gets healed 30+ times → HP back to max.
+        //   3. Room never exits → infinite loop.
+        // Use UiHelper.Click on the matching button instead. Direct API for the
+        // sub-screen drives the rest of the chain (SMITH's card pick still
+        // routes through our ICardSelector).
+        var roomNode = MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom.Instance;
+        if (roomNode == null)
+            return (500, "{\"ok\":false,\"error\":\"NRestSiteRoom.Instance null\"}");
+
+        var buttons = UiHelper.FindAll<MegaCrit.Sts2.Core.Nodes.RestSite.NRestSiteButton>(roomNode)
+            .Where(b => b.Option != null && b.Option.OptionId == option.OptionId)
+            .ToList();
+        if (buttons.Count == 0)
+            return (500, $"{{\"ok\":false,\"error\":\"no NRestSiteButton for option_id\",\"option_id\":{JsonStr(option.OptionId)}}}");
+        var btn = buttons[0];
+        if (!btn.IsEnabled)
+            return (409, $"{{\"ok\":false,\"error\":\"rest site button disabled — option already chosen?\",\"option_id\":{JsonStr(option.OptionId)}}}");
+
         try
         {
-            selectTask = option.OnSelect();
+            await UiHelper.Click(btn);
         }
         catch (Exception ex)
         {
-            Log.Error($"{Tag} option.OnSelect threw synchronously: {ex}");
-            return (500, "{\"ok\":false,\"error\":\"option.OnSelect threw\",\"message\":" + JsonStr(ex.Message) + "}");
-        }
-        bool finished = false;
-        bool ok = true;
-        try
-        {
-            await selectTask.WaitAsync(TimeSpan.FromSeconds(1.5));
-            finished = true;
-            ok = selectTask.Result;
-        }
-        catch (TimeoutException)
-        {
-            // Sub-screen opened (e.g. SMITH's card pick) — agent drives next.
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"{Tag} option.OnSelect async error: {ex.Message}");
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
 
-        // If the option already finished synchronously (HEAL with no sub-screen),
-        // also wait briefly for any post-effect queue to drain.
-        if (finished)
+        // The button click async-runs ChooseLocalOption + DisableOptions. For
+        // simple options (HEAL, LIFT) the chain finishes in <1s. SMITH opens a
+        // card-select sub-screen via our ICardSelector → /step select_pick will
+        // drive it. Same short-wait pattern: 1.5s for finished, else return
+        // and let agent observe phase change.
+        var settleDeadline = DateTime.UtcNow.AddSeconds(1.5);
+        while (DateTime.UtcNow < settleDeadline)
         {
-            var aqs = RunManager.Instance.ActionQueueSet;
-            if (aqs != null)
-            {
-                try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(5)); }
-                catch (TimeoutException) { /* best effort */ }
-            }
+            await Task.Delay(100);
+            if (Sts2GymMod.Selector.IsActive) break;
+            // Room transitioned away (e.g. HEAL completed and went to map).
+            var s2 = RunManager.Instance.DebugOnlyGetState();
+            if (s2?.CurrentRoom is not RestSiteRoom) break;
+        }
+
+        var aqs = RunManager.Instance.ActionQueueSet;
+        if (aqs != null && !Sts2GymMod.Selector.IsActive)
+        {
+            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(3)); }
+            catch (TimeoutException) { /* best effort */ }
         }
         await Task.Delay(200);
         HttpBridge.RefreshObservation();
 
-        return (200, $"{{\"ok\":true,\"action\":\"rest_choose\",\"option_idx\":{idx},\"option_id\":{JsonStr(option.OptionId)},\"finished\":{(finished ? "true" : "false")},\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
+        return (200, $"{{\"ok\":true,\"action\":\"rest_choose\",\"option_idx\":{idx},\"option_id\":{JsonStr(option.OptionId)},\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
     }
 
     // -------------------------------------------------- helpers
