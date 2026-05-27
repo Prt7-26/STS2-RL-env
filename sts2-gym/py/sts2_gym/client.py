@@ -256,6 +256,10 @@ class ModBridgeClient:
         """
         return self._post_json("/step", {"type": "rest_choose", "option_idx": option_idx}, timeout=30.0)
 
+    def rest_leave(self) -> dict[str, Any]:
+        """Click the rest-room's proceed button after the option has resolved."""
+        return self._post_json("/step", {"type": "rest_leave"}, timeout=15.0)
+
     def reset(
         self,
         *,

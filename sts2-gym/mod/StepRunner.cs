@@ -106,6 +106,7 @@ internal static class StepRunner
             "shop_buy" => await NonCombatHandlers.ShopBuyAsync(cmd),
             "shop_leave" => await NonCombatHandlers.ShopLeaveAsync(),
             "rest_choose" => await NonCombatHandlers.RestChooseAsync(cmd),
+            "rest_leave" => await NonCombatHandlers.RestLeaveAsync(),
             // Day-10.E: relic-select sub-screen (Neow PRECARIOUS_SHEARS, treasure rooms, ...).
             "relic_pick" => await NonCombatHandlers.RelicPickAsync(cmd),
             // Day-10.G: card-reward sub-screen — NCardHolder pick.

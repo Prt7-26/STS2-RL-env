@@ -343,7 +343,16 @@ def _do_rest_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *
     options = (obs.get("rest") or {}).get("options") or []
     enabled = [o for o in options if o.get("is_enabled")]
     if not enabled:
-        time.sleep(0.3)
+        # Day-10.N: after the option resolves the room shows a "前进" proceed
+        # button. Without rest_leave we'd just spin forever in phase=rest with
+        # empty options.
+        if verbose: print("[full-run]   rest → no enabled options, clicking proceed")
+        try:
+            c.rest_leave()
+        except StepError as e:
+            # Button not yet enabled (e.g. SMITH still resolving). Wait + retry.
+            if verbose: print(f"[full-run]   rest_leave 409 ({e.payload.get('error')}); waiting")
+            time.sleep(0.3)
         return
     pick = rng.choice(enabled)
     if verbose: print(f"[full-run]   rest → option_idx={pick['option_idx']} ({pick.get('option_id')})")

@@ -724,6 +724,36 @@ internal static class NonCombatHandlers
         return (200, $"{{\"ok\":true,\"action\":\"rest_choose\",\"option_idx\":{idx},\"option_id\":{JsonStr(option.OptionId)},\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
     }
 
+    // -------------------------------------------------- Rest leave (Day-10.N)
+
+    /// <summary>
+    /// After a rest option is chosen and resolved, NRestSiteRoom shows a "前进"
+    /// (Proceed) button to leave. NRestSiteRoom : IRoomWithProceedButton, so we
+    /// can grab .ProceedButton directly. Without this, agent sees options=[]
+    /// and just sleeps forever (stuck-detector eventually bails).
+    /// </summary>
+    public static async Task<(int, string)> RestLeaveAsync()
+    {
+        var roomNode = MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom.Instance;
+        if (roomNode == null)
+            return (409, "{\"ok\":false,\"error\":\"NRestSiteRoom.Instance null (not in a rest room)\"}");
+        var btn = roomNode.ProceedButton;
+        if (btn == null)
+            return (500, "{\"ok\":false,\"error\":\"NRestSiteRoom.ProceedButton null\"}");
+        if (!btn.IsEnabled)
+            return (409, "{\"ok\":false,\"error\":\"proceed button disabled — option not yet chosen?\"}");
+
+        Log.Info($"{Tag} rest_leave clicking proceed");
+        try { await UiHelper.Click(btn); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+        await Task.Delay(400);
+        HttpBridge.RefreshObservation();
+        return (200, "{\"ok\":true,\"action\":\"rest_leave\"}");
+    }
+
     // -------------------------------------------------- helpers
 
     private static string JsonStr(string? s)
