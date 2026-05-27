@@ -447,12 +447,23 @@ internal static class NonCombatHandlers
             await Task.Delay(80);
         }
 
-        // Day-10.I extra: if screen STILL there, try direct NOverlayStack.Remove
-        // as a last resort. The Released signal sometimes doesn't propagate to
-        // OnProceedButtonPressed if the screen consumed it elsewhere.
+        // Day-10.K: only force-Remove if all reward buttons are gone. Otherwise
+        // we'd silently skip unclaimed rewards (Day-10.I bug: the agent would
+        // poll quickly, see empty items because the screen was still
+        // constructing, call leave, our click no-op'd because button-pressed
+        // didn't fire, fallback Remove dismissed the screen WITH rewards still
+        // claimable — agent walked into the next combat broke). Don't force-
+        // Remove when buttons remain; let agent claim them properly.
         if (ReferenceEquals(NOverlayStack.Instance?.Peek(), screen))
         {
-            Log.Warn($"{Tag} reward screen still on top after click — forcing Remove");
+            var remaining = UiHelper.FindAll<MegaCrit.Sts2.Core.Nodes.Rewards.NRewardButton>(screen)
+                                    .Where(b => b.IsEnabled).Count();
+            if (remaining > 0)
+            {
+                Log.Warn($"{Tag} reward screen still on top + {remaining} reward(s) still claimable — NOT force-removing");
+                return (409, $"{{\"ok\":false,\"error\":\"reward screen has {remaining} unclaimed items\",\"hint\":\"call /step take_reward_item first\"}}");
+            }
+            Log.Warn($"{Tag} reward screen still on top (no claimable items) — forcing Remove");
             try { NOverlayStack.Instance.Remove(screen); } catch { /* best effort */ }
             await Task.Delay(300);
         }
@@ -470,23 +481,53 @@ internal static class NonCombatHandlers
         if (screen == null)
             return (409, $"{{\"ok\":false,\"error\":\"not on game-over screen\",\"overlay\":{JsonStr(overlay?.GetType().Name ?? "null")}}}");
 
-        // Game-over screen usually has a single "back to main menu" button. Find
-        // any NProceedButton or generic NButton via UiHelper.
-        var btn = UiHelper.FindFirst<NProceedButton>(screen)
-                  ?? (NClickableControl?)UiHelper.FindAll<NButton>(screen).FirstOrDefault(b => b.IsEnabled);
-        if (btn == null)
-            return (500, "{\"ok\":false,\"error\":\"no enabled button found on game-over screen\"}");
+        // Day-10.K: AutoSlay's GameOverScreenHandler shows the right flow.
+        // Stage 1: NGameOverContinueButton — opens the summary panel.
+        // Stage 2: NReturnToMainMenuButton — actually returns to main menu.
+        // Earlier impl fell through to any-enabled-NButton, which picked
+        // NDiscoveredItem (the unlock-history items) and clicked it 5×.
+        var clicked = new List<string>();
+        var deadline = DateTime.UtcNow.AddSeconds(30);
 
-        Log.Info($"{Tag} clicking game-over screen button: {btn.GetType().Name}");
-        try { await UiHelper.Click(btn); }
-        catch (Exception ex)
+        // Stage 1: continue button (opens summary).
+        var contBtn = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverContinueButton>(screen);
+        if (contBtn != null)
         {
-            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
+            // Wait for it to become enabled (animations may delay it).
+            while (DateTime.UtcNow < deadline && !contBtn.IsEnabled)
+                await Task.Delay(100);
+            if (contBtn.IsEnabled)
+            {
+                Log.Info($"{Tag} clicking NGameOverContinueButton");
+                try { await UiHelper.Click(contBtn); clicked.Add("continue"); }
+                catch (Exception ex) { Log.Warn($"{Tag} continue click: {ex.Message}"); }
+                await Task.Delay(500);
+            }
         }
 
-        await Task.Delay(500);
+        // Stage 2: return-to-main-menu button (after summary animation).
+        MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NReturnToMainMenuButton? menuBtn = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            menuBtn = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NReturnToMainMenuButton>(screen);
+            if (menuBtn != null && menuBtn.Visible && menuBtn.IsEnabled) break;
+            await Task.Delay(150);
+        }
+        if (menuBtn != null && menuBtn.IsEnabled)
+        {
+            Log.Info($"{Tag} clicking NReturnToMainMenuButton");
+            try { await UiHelper.Click(menuBtn); clicked.Add("main_menu"); }
+            catch (Exception ex) { Log.Warn($"{Tag} main-menu click: {ex.Message}"); }
+            await Task.Delay(800);
+        }
+        else
+        {
+            Log.Warn($"{Tag} main-menu button never became enabled");
+        }
+
         HttpBridge.RefreshObservation();
-        return (200, "{\"ok\":true,\"action\":\"proceed_after_game_over\"}");
+        var clickedStr = string.Join(",", clicked);
+        return (200, $"{{\"ok\":true,\"action\":\"proceed_after_game_over\",\"clicked\":[\"{clickedStr.Replace(",","\",\"")}\"]}}");
     }
 
     // -------------------------------------------------- Shop (Day-10.B)

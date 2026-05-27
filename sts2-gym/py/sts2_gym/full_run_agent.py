@@ -264,27 +264,37 @@ def _do_event_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, 
     c.choose_event_option(pick["option_idx"])
 
 
-def _do_reward_step(c: ModBridgeClient, obs: dict[str, Any] | None = None, *, verbose: bool) -> None:
-    """Day-10.G: claim every enabled reward item, including card rewards.
+_reward_empty_strikes = {"count": 0}  # module-level: consecutive empty observations
 
-    Clicking a CardReward NRewardButton opens NCardRewardSelectionScreen as
-    a child overlay — phase flips to "card_reward_select" on the next
-    /observe and the outer loop dispatches to _do_card_reward_select_step.
-    After picking a card, the sub-screen closes and we're back on the
-    NRewardsScreen with the card slot gone.
+
+def _do_reward_step(c: ModBridgeClient, obs: dict[str, Any] | None = None, *, verbose: bool) -> None:
+    """Day-10.K: claim every enabled reward item, including card rewards.
+
+    Race guard: CombatEnded → NRewardsScreen pushes → BUT reward items take
+    a few frames to populate. If we don't guard, agent enters reward phase,
+    sees items=[] on the first poll, leaves immediately, and skips all
+    loot. We require 5 consecutive empty observations (~1s) before
+    accepting "nothing to claim".
     """
     reward = (obs or {}).get("reward") or {}
     items = reward.get("items") or []
     eligible = [it for it in items if it.get("is_enabled")]
     if eligible:
+        _reward_empty_strikes["count"] = 0
         pick = eligible[0]
         if verbose: print(f"[full-run]   reward → take idx={pick['idx']} type={pick.get('reward_type')}")
         c.take_reward_item(pick["idx"])
         return
-    # Nothing more to claim — leave.
-    if verbose:
-        items_left = [f"{it.get('reward_type', '?')}[{it.get('idx')}, enabled={it.get('is_enabled')}]" for it in items]
-        print(f"[full-run]   reward → leave (items: {items_left})")
+    # Empty items list — could be transient (screen still loading) or real
+    # (everything claimed). Wait a few polls to disambiguate.
+    _reward_empty_strikes["count"] += 1
+    if _reward_empty_strikes["count"] < 5:
+        if verbose: print(f"[full-run]   reward → empty items (strike {_reward_empty_strikes['count']}/5); waiting for populate")
+        time.sleep(0.2)
+        return
+    # 5× empty — really nothing left. Leave.
+    _reward_empty_strikes["count"] = 0
+    if verbose: print(f"[full-run]   reward → leave (confirmed empty after 5 polls)")
     c.leave_reward_screen()
 
 
