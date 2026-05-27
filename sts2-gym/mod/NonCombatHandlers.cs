@@ -161,7 +161,53 @@ internal static class NonCombatHandlers
             $"\"event_id\":{JsonStr(evt.Id.Entry)}}}");
     }
 
-    // -------------------------------------------------- Reward screen — leave
+    // -------------------------------------------------- Reward screen — take + leave
+
+    /// <summary>
+    /// Day-10.C: enumerate the reward screen's NRewardButton[] in screen order.
+    /// Used both for /observe (so agents know what's on offer) and for the
+    /// take_reward_item handler. Safe to call only on game-main-thread.
+    /// </summary>
+    public static List<MegaCrit.Sts2.Core.Nodes.Rewards.NRewardButton> EnumerateRewardButtons()
+    {
+        var overlay = NOverlayStack.Instance?.Peek();
+        var screen = overlay as NRewardsScreen;
+        if (screen == null) return new();
+        return UiHelper.FindAll<MegaCrit.Sts2.Core.Nodes.Rewards.NRewardButton>(screen).ToList();
+    }
+
+    public static async Task<(int, string)> TakeRewardItemAsync(JsonElement cmd)
+    {
+        if (!cmd.TryGetProperty("idx", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'idx'\"}");
+        int idx = idxProp.GetInt32();
+
+        var buttons = EnumerateRewardButtons();
+        if (buttons.Count == 0)
+            return (409, "{\"ok\":false,\"error\":\"no reward buttons found (not on reward screen?)\"}");
+        if (idx < 0 || idx >= buttons.Count)
+            return (400, $"{{\"ok\":false,\"error\":\"idx out of range\",\"got\":{idx},\"count\":{buttons.Count}}}");
+
+        var btn = buttons[idx];
+        if (!btn.IsEnabled)
+            return (409, $"{{\"ok\":false,\"error\":\"reward button disabled\",\"reward_type\":{JsonStr(btn.Reward?.GetType().Name)}}}");
+
+        Log.Info($"{Tag} take reward idx={idx} type={btn.Reward?.GetType().Name}");
+        try { await UiHelper.Click(btn); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+
+        // Card-reward picks open a sub-screen routed through ICardSelector. Wait
+        // briefly so the agent's next /observe sees either selector_active or
+        // the post-claim state. Gold/potion claims apply immediately.
+        await Task.Delay(300);
+        HttpBridge.RefreshObservation();
+        return (200, $"{{\"ok\":true,\"action\":\"take_reward_item\",\"idx\":{idx}," +
+            $"\"reward_type\":{JsonStr(btn.Reward?.GetType().Name)}," +
+            $"\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
+    }
 
     public static async Task<(int, string)> LeaveRewardScreenAsync()
     {

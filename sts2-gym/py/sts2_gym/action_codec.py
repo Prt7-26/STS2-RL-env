@@ -81,6 +81,8 @@ def to_text(action: dict[str, Any], context: dict[str, Any] | None = None) -> st
         return f"choose map {action.get('col', '?')},{action.get('row', '?')}"
     if t == "choose_event_option":
         return f"choose option {action.get('option_idx', '?')}"
+    if t == "take_reward_item":
+        return f"take reward {action.get('idx', '?')}"
     if t == "leave_reward_screen":
         return "leave reward"
     if t == "proceed_after_game_over":
@@ -148,6 +150,8 @@ _register(r"choose\s+map\s+(?P<col>\d+)\s*,\s*(?P<row>\d+)",
           lambda m: {"type": "choose_map_node", "col": int(m["col"]), "row": int(m["row"])})
 _register(r"choose\s+option\s+(?P<i>\d+)",
           lambda m: {"type": "choose_event_option", "option_idx": int(m["i"])})
+_register(r"take\s+reward\s+(?P<i>\d+)",
+          lambda m: {"type": "take_reward_item", "idx": int(m["i"])})
 _register(r"leave\s+reward", lambda m: {"type": "leave_reward_screen"})
 _register(r"proceed", lambda m: {"type": "proceed_after_game_over"})
 _register(r"shop\s+buy\s+(?P<i>\d+)",

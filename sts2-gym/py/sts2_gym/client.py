@@ -213,9 +213,16 @@ class ModBridgeClient:
         """Pick option N on the current event screen. 0-indexed into observe.event.options."""
         return self._post_json("/step", {"type": "choose_event_option", "option_idx": option_idx}, timeout=30.0)
 
+    def take_reward_item(self, idx: int) -> dict[str, Any]:
+        """Claim reward item at index ``idx`` (see /observe.reward.items[*].idx).
+        Card rewards open a sub-screen that runs through the ICardSelector
+        (selector_active=true follows — resolve via select_pick / select_skip)."""
+        return self._post_json("/step", {"type": "take_reward_item", "idx": idx}, timeout=15.0)
+
     def leave_reward_screen(self) -> dict[str, Any]:
-        """Click the post-combat reward screen's proceed button. Any card pick must
-        be done via select_pick first (Day-8 ICardSelector path)."""
+        """Click the post-combat reward screen's proceed button. Take any
+        gold/potion/relic via take_reward_item first; card picks already
+        route through ICardSelector (Day-8)."""
         return self._post_json("/step", {"type": "leave_reward_screen"}, timeout=15.0)
 
     def proceed_after_game_over(self) -> dict[str, Any]:

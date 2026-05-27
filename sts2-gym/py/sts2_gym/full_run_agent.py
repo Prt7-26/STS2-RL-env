@@ -102,7 +102,7 @@ def run_one_full_run(
             elif effective == "event":
                 _do_event_step(c, obs, rng, verbose=verbose)
             elif effective == "reward":
-                _do_reward_step(c, verbose=verbose)
+                _do_reward_step(c, obs, verbose=verbose)
             elif effective == "shop":
                 _do_shop_step(c, obs, rng, verbose=verbose)
             elif effective == "rest":
@@ -179,8 +179,24 @@ def _do_event_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, 
     c.choose_event_option(pick["option_idx"])
 
 
-def _do_reward_step(c: ModBridgeClient, *, verbose: bool) -> None:
-    if verbose: print("[full-run]   reward → leave")
+def _do_reward_step(c: ModBridgeClient, obs: dict[str, Any] | None = None, *, verbose: bool) -> None:
+    """Day-10.C: greedily take any enabled reward items, then leave.
+
+    Each take_reward_item may activate the ICardSelector (card reward sub-
+    screen) — in that case the outer loop sees selector_active=true on the
+    next /observe and dispatches to the selector branch first. We just take
+    one item per call; the outer loop drives the cycle.
+    """
+    reward = (obs or {}).get("reward") or {}
+    items = reward.get("items") or []
+    enabled = [it for it in items if it.get("is_enabled")]
+    if enabled:
+        pick = enabled[0]
+        if verbose: print(f"[full-run]   reward → take idx={pick['idx']} type={pick.get('reward_type')}")
+        c.take_reward_item(pick["idx"])
+        return
+    # Nothing more to claim — leave the screen.
+    if verbose: print("[full-run]   reward → leave (nothing left)")
     c.leave_reward_screen()
 
 

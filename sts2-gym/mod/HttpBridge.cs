@@ -335,13 +335,26 @@ internal static class HttpBridge
 
     private static void AppendRewardJson(StringBuilder sb)
     {
-        // Card-reward picks already go through ICardSelector → "selector" field.
-        // Here we just expose that the reward screen is up so the agent knows it
-        // can /step leave_reward_screen (after picking any non-card rewards via UI,
-        // which Day-10.B will support).
+        // Day-10.C: enumerate NRewardButton[] so agents can pick gold/potion/relic
+        // /step take_reward_item. Card-reward picks route through ICardSelector
+        // (already exposed in the top-level "selector" field) when their button
+        // is clicked — agent does take_reward_item → selector_active=true →
+        // select_pick → returns to reward screen.
         var overlay = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.Peek();
-        sb.Append(",\"reward\":{\"screen\":").Append(JsonEncodedString(overlay?.GetType().Name ?? "unknown"))
-          .Append(",\"can_leave\":true}");
+        sb.Append(",\"reward\":{\"screen\":").Append(JsonEncodedString(overlay?.GetType().Name ?? "unknown"));
+        var buttons = NonCombatHandlers.EnumerateRewardButtons();
+        sb.Append(",\"items\":[");
+        for (int i = 0; i < buttons.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var b = buttons[i];
+            sb.Append("{\"idx\":").Append(i);
+            sb.Append(",\"reward_type\":").Append(JsonEncodedString(b.Reward?.GetType().Name));
+            sb.Append(",\"is_enabled\":").Append(b.IsEnabled ? "true" : "false");
+            sb.Append('}');
+        }
+        sb.Append("]");
+        sb.Append(",\"can_leave\":true}");
     }
 
     private static void AppendGameOverJson(StringBuilder sb)
