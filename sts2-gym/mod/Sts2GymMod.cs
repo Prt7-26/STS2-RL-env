@@ -70,7 +70,11 @@ public static class Sts2GymMod
             // Subscribe to lifecycle events. These fire long after Init,
             // by which time the game world is fully constructed.
             RunManager.Instance.RunStarted += OnRunStarted;
+            RunManager.Instance.RoomEntered += OnRoomEntered;
+            RunManager.Instance.RoomExited += OnRoomExited;
             CombatManager.Instance.CombatSetUp += OnCombatSetUp;
+            CombatManager.Instance.CombatEnded += OnCombatEnded;
+            CombatManager.Instance.CombatWon += OnCombatWon;
             CombatManager.Instance.TurnStarted += OnTurnStarted;
             CombatManager.Instance.TurnEnded += OnTurnEnded;
             // PlayerActionsDisabledChanged fires AFTER the game's in-frame
@@ -95,12 +99,33 @@ public static class Sts2GymMod
         }
     }
 
+    private static bool _overlayStackSubscribed;
+
     static void OnRunStarted(RunState run)
     {
         _runsObserved++;
         try
         {
             Log.Info($"{LogTag} RunStarted #{_runsObserved}: ascension={run.AscensionLevel} players={run.Players.Count} seed='{run.Rng.StringSeed}' acts={run.Acts.Count}");
+
+            // Day-10.H: lazy-subscribe to NOverlayStack.Changed. NRun.Instance is up
+            // now; before that the Godot node didn't exist. Without this, post-
+            // combat NRewardsScreen pushes never trigger a cache refresh, leaving
+            // /observe stuck in 'combat_pending'.
+            if (!_overlayStackSubscribed)
+            {
+                var stack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
+                if (stack != null)
+                {
+                    stack.Changed += OnOverlayStackChanged;
+                    _overlayStackSubscribed = true;
+                    Log.Info($"{LogTag} subscribed to NOverlayStack.Changed");
+                }
+                else
+                {
+                    Log.Warn($"{LogTag} NOverlayStack.Instance null at RunStarted — overlay-pushed phases (reward, relic-select) may have stale cache");
+                }
+            }
 
             // Day-9.1: only re-push if user explicitly enabled it (typically by an
             // agent session via /selector/enable). Manual-play runs leave the stack
@@ -189,5 +214,45 @@ public static class Sts2GymMod
         {
             Log.Error($"{LogTag} OnPlayerActionsDisabledChanged exception: {ex}");
         }
+    }
+
+    // ---- Day-10.H: bridge-cache refresh on additional state transitions ----
+    //
+    // Without these, the agent gets stuck in 'combat_pending' after a victory:
+    // CombatManager.IsInProgress flips false (no TurnEnded fires for the final
+    // round), the NRewardsScreen pushes a frame or two later, but no subscribed
+    // event fires in between → cached /observe stays stale forever.
+    //
+    // Same pattern for room transitions (combat→map) and overlay pushes
+    // (reward sub-screens, relic-select, game-over).
+
+    static void OnCombatEnded(MegaCrit.Sts2.Core.Rooms.CombatRoom room)
+    {
+        try { HttpBridge.RefreshObservation(); }
+        catch (Exception ex) { Log.Error($"{LogTag} OnCombatEnded: {ex}"); }
+    }
+
+    static void OnCombatWon(MegaCrit.Sts2.Core.Rooms.CombatRoom room)
+    {
+        try { HttpBridge.RefreshObservation(); }
+        catch (Exception ex) { Log.Error($"{LogTag} OnCombatWon: {ex}"); }
+    }
+
+    static void OnRoomEntered()
+    {
+        try { HttpBridge.RefreshObservation(); }
+        catch (Exception ex) { Log.Error($"{LogTag} OnRoomEntered: {ex}"); }
+    }
+
+    static void OnRoomExited()
+    {
+        try { HttpBridge.RefreshObservation(); }
+        catch (Exception ex) { Log.Error($"{LogTag} OnRoomExited: {ex}"); }
+    }
+
+    static void OnOverlayStackChanged()
+    {
+        try { HttpBridge.RefreshObservation(); }
+        catch (Exception ex) { Log.Error($"{LogTag} OnOverlayStackChanged: {ex}"); }
     }
 }
