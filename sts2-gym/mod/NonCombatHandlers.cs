@@ -405,7 +405,28 @@ internal static class NonCombatHandlers
         if (proceed == null)
             return (500, "{\"ok\":false,\"error\":\"no proceed button found on reward screen\"}");
 
-        Log.Info($"{Tag} clicking reward screen proceed");
+        var enabled = proceed.IsEnabled;
+        Log.Info($"{Tag} reward proceed button: IsEnabled={enabled}");
+
+        if (!enabled)
+        {
+            // Hook.ShouldProceedToNextMapPoint(_runState) may need to settle, or
+            // taking the last reward fired async cleanup that hasn't finished.
+            // Wait up to 2s for the button to enable.
+            var enableDeadline = DateTime.UtcNow.AddSeconds(2);
+            while (DateTime.UtcNow < enableDeadline && !proceed.IsEnabled)
+            {
+                await Task.Delay(100);
+            }
+            enabled = proceed.IsEnabled;
+            Log.Info($"{Tag} reward proceed button after settle: IsEnabled={enabled}");
+        }
+
+        if (!enabled)
+        {
+            return (409, "{\"ok\":false,\"error\":\"proceed button disabled — Hook.ShouldProceedToNextMapPoint may block leaving\"}");
+        }
+
         try
         {
             await UiHelper.Click(proceed);
@@ -415,17 +436,29 @@ internal static class NonCombatHandlers
             return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
 
-        // Wait for either the screen to close OR the map to open.
+        // Wait for either the screen to close OR the map to open OR phase change.
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while (DateTime.UtcNow < deadline)
         {
             var top = NOverlayStack.Instance?.Peek();
             if (top != screen) break;
             if (NMapScreen.Instance?.IsOpen == true) break;
-            await Task.Delay(50);
+            if (!RunManager.Instance.IsInProgress) break;
+            await Task.Delay(80);
         }
+
+        // Day-10.I extra: if screen STILL there, try direct NOverlayStack.Remove
+        // as a last resort. The Released signal sometimes doesn't propagate to
+        // OnProceedButtonPressed if the screen consumed it elsewhere.
+        if (ReferenceEquals(NOverlayStack.Instance?.Peek(), screen))
+        {
+            Log.Warn($"{Tag} reward screen still on top after click — forcing Remove");
+            try { NOverlayStack.Instance.Remove(screen); } catch { /* best effort */ }
+            await Task.Delay(300);
+        }
+
         HttpBridge.RefreshObservation();
-        return (200, "{\"ok\":true,\"action\":\"leave_reward_screen\"}");
+        return (200, $"{{\"ok\":true,\"action\":\"leave_reward_screen\",\"button_was_enabled\":{(enabled ? "true" : "false")}}}");
     }
 
     // -------------------------------------------------- Game over — proceed
