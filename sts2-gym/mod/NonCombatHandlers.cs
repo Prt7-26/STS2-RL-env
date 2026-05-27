@@ -12,10 +12,12 @@ using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
@@ -216,6 +218,66 @@ internal static class NonCombatHandlers
 
         return (200, $"{{\"ok\":true,\"action\":\"choose_event_option\",\"option_idx\":{idx}," +
             $"\"event_id\":{JsonStr(evt.Id.Entry)},\"option_finished\":{(finished ? "true" : "false")}}}");
+    }
+
+    // -------------------------------------------------- Card-reward sub-screen (Day-10.G)
+
+    /// <summary>
+    /// Day-10.G: enumerate NCardHolder buttons on the current NCardReward-
+    /// SelectionScreen. Mirrors AutoSlay's CardRewardScreenHandler pattern.
+    /// </summary>
+    public static List<NCardHolder> EnumerateCardRewardHolders()
+    {
+        var overlay = NOverlayStack.Instance?.Peek();
+        var screen = overlay as NCardRewardSelectionScreen;
+        if (screen == null) return new();
+        return UiHelper.FindAll<NCardHolder>(screen).ToList();
+    }
+
+    public static async Task<(int, string)> CardRewardPickAsync(JsonElement cmd)
+    {
+        if (!cmd.TryGetProperty("idx", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'idx'\"}");
+        int idx = idxProp.GetInt32();
+
+        var cards = EnumerateCardRewardHolders();
+        if (cards.Count == 0)
+            return (409, "{\"ok\":false,\"error\":\"not on card-reward selection screen\"}");
+        if (idx < 0 || idx >= cards.Count)
+            return (400, $"{{\"ok\":false,\"error\":\"idx out of range\",\"got\":{idx},\"count\":{cards.Count}}}");
+
+        var holder = cards[idx];
+        var cardId = holder.CardNode?.Model?.Id.Entry ?? "?";
+        Log.Info($"{Tag} card_reward_pick idx={idx} card_id={cardId}");
+
+        try
+        {
+            // AutoSlay pattern: emit the Pressed signal directly.
+            holder.EmitSignal(NCardHolder.SignalName.Pressed, holder);
+        }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"EmitSignal threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+
+        // Wait for the screen to actually close.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            var top = NOverlayStack.Instance?.Peek();
+            if (top is not NCardRewardSelectionScreen) break;
+            await Task.Delay(80);
+        }
+        await Task.Delay(200);
+        var aqs = RunManager.Instance.ActionQueueSet;
+        if (aqs != null)
+        {
+            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (TimeoutException) { /* best effort */ }
+        }
+        HttpBridge.RefreshObservation();
+
+        return (200, $"{{\"ok\":true,\"action\":\"card_reward_pick\",\"idx\":{idx},\"card_id\":{JsonStr(cardId)}}}");
     }
 
     // -------------------------------------------------- Relic-select screen (Day-10.E)

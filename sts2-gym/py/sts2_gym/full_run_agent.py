@@ -160,6 +160,8 @@ def run_one_full_run(
                 _do_event_step(c, obs, rng, verbose=verbose)
             elif effective == "reward":
                 _do_reward_step(c, obs, verbose=verbose)
+            elif effective == "card_reward_select":
+                _do_card_reward_select_step(c, obs, rng, verbose=verbose)
             elif effective == "shop":
                 _do_shop_step(c, obs, rng, verbose=verbose)
             elif effective == "rest":
@@ -263,33 +265,42 @@ def _do_event_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, 
 
 
 def _do_reward_step(c: ModBridgeClient, obs: dict[str, Any] | None = None, *, verbose: bool) -> None:
-    """Day-10.D: claim non-card rewards (gold/potion/relic), then leave.
+    """Day-10.G: claim every enabled reward item, including card rewards.
 
-    Card rewards are intentionally skipped — clicking their NRewardButton
-    opens NCardRewardSelectionScreen which awaits its own CardsSelected()
-    Task, NOT routed through our ICardSelector. Until Day-10.E adds a
-    dedicated card_reward_pick action, the safe behavior is to leave card
-    slots unclaimed (the game lets us leave the reward screen with them).
+    Clicking a CardReward NRewardButton opens NCardRewardSelectionScreen as
+    a child overlay — phase flips to "card_reward_select" on the next
+    /observe and the outer loop dispatches to _do_card_reward_select_step.
+    After picking a card, the sub-screen closes and we're back on the
+    NRewardsScreen with the card slot gone.
     """
     reward = (obs or {}).get("reward") or {}
     items = reward.get("items") or []
-    # Filter to claim-able non-card items.
-    eligible = [
-        it for it in items
-        if it.get("is_enabled")
-        and (it.get("reward_type") or "").lower() not in ("cardreward",)
-    ]
+    eligible = [it for it in items if it.get("is_enabled")]
     if eligible:
         pick = eligible[0]
         if verbose: print(f"[full-run]   reward → take idx={pick['idx']} type={pick.get('reward_type')}")
         c.take_reward_item(pick["idx"])
         return
-    # No more non-card items to claim — leave.
-    skipped_cards = [it for it in items if it.get("is_enabled") and (it.get("reward_type") or "").lower() == "cardreward"]
+    # Nothing more to claim — leave.
     if verbose:
-        skip_note = f" (skipping {len(skipped_cards)} card reward)" if skipped_cards else ""
-        print(f"[full-run]   reward → leave{skip_note}")
+        items_left = [f"{it.get('reward_type', '?')}[{it.get('idx')}, enabled={it.get('is_enabled')}]" for it in items]
+        print(f"[full-run]   reward → leave (items: {items_left})")
     c.leave_reward_screen()
+
+
+def _do_card_reward_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
+    """Day-10.G: NCardRewardSelectionScreen — pick one of the 3 card holders."""
+    crs = obs.get("card_reward_select") or {}
+    cards = crs.get("cards") or []
+    if not cards:
+        if verbose: print("[full-run]   card_reward_select → no cards yet; waiting")
+        time.sleep(0.3)
+        return
+    pick = rng.choice(cards)
+    if verbose:
+        opts = ", ".join(f"[{c['idx']}]{c.get('card_id')}" for c in cards)
+        print(f"[full-run]   card_reward_select [{opts}] → pick {pick['idx']}")
+    c.card_reward_pick(pick["idx"])
 
 
 def _do_shop_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:

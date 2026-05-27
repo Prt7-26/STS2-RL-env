@@ -214,11 +214,31 @@ internal static class HttpBridge
             else if (phase == "shop") AppendShopJson(sb);
             else if (phase == "rest") AppendRestJson(sb);
             else if (phase == "relic_select") AppendRelicSelectJson(sb);
+            else if (phase == "card_reward_select") AppendCardRewardSelectJson(sb);
         }
         catch (Exception ex)
         {
             Log.Warn($"{Tag} AppendNonCombatJson failed: {ex.Message}");
         }
+    }
+
+    private static void AppendCardRewardSelectJson(StringBuilder sb)
+    {
+        // Day-10.G: NCardRewardSelectionScreen is pushed when the player clicks
+        // a CardReward NRewardButton. AutoSlay's pattern is UiHelper.FindAll
+        // <NCardHolder> then EmitSignal(Pressed) on one.
+        var cards = NonCombatHandlers.EnumerateCardRewardHolders();
+        sb.Append(",\"card_reward_select\":{\"count\":").Append(cards.Count);
+        sb.Append(",\"cards\":[");
+        for (int i = 0; i < cards.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var model = cards[i].CardNode?.Model;
+            sb.Append("{\"idx\":").Append(i)
+              .Append(",\"card_id\":").Append(JsonEncodedString(model?.Id.Entry))
+              .Append('}');
+        }
+        sb.Append("]}");
     }
 
     private static void AppendRelicSelectJson(StringBuilder sb)
@@ -488,7 +508,10 @@ internal static class HttpBridge
             var t = overlay.GetType();
             if (t == typeof(NGameOverScreen)) return "game_over";
             if (t == typeof(NRewardsScreen)) return "reward";
-            if (t == typeof(NCardRewardSelectionScreen)) return "reward";
+            // Day-10.G: distinguish the card-reward sub-screen so the agent
+            // knows to dispatch card_reward_pick (NCardHolder click) instead
+            // of take_reward_item (NRewardButton click on the parent).
+            if (t == typeof(NCardRewardSelectionScreen)) return "card_reward_select";
             if (t == typeof(NDeckUpgradeSelectScreen)) return "upgrade";
             if (t == typeof(NDeckTransformSelectScreen)) return "transform";
             if (t == typeof(NDeckEnchantSelectScreen)) return "enchant";

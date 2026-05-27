@@ -108,6 +108,8 @@ internal static class StepRunner
             "rest_choose" => await NonCombatHandlers.RestChooseAsync(cmd),
             // Day-10.E: relic-select sub-screen (Neow PRECARIOUS_SHEARS, treasure rooms, ...).
             "relic_pick" => await NonCombatHandlers.RelicPickAsync(cmd),
+            // Day-10.G: card-reward sub-screen — NCardHolder pick.
+            "card_reward_pick" => await NonCombatHandlers.CardRewardPickAsync(cmd),
             "noop" => (200, "{\"ok\":true,\"action\":\"noop\"}"),
             _ => (400, "{\"ok\":false,\"error\":\"unknown action type\",\"type\":" + JsonStr(type ?? "") + "}"),
         };
