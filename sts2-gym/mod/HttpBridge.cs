@@ -337,6 +337,7 @@ internal static class HttpBridge
         if (evt == null) return;
         sb.Append(",\"event\":{");
         sb.Append("\"id\":").Append(JsonEncodedString(evt.Id.Entry));
+        sb.Append(",\"is_finished\":").Append(evt.IsFinished ? "true" : "false");
         sb.Append(",\"options\":[");
         var options = evt.CurrentOptions;
         for (int i = 0; i < (options?.Count ?? 0); i++)
@@ -346,6 +347,8 @@ internal static class HttpBridge
             sb.Append("{\"option_idx\":").Append(i)
               .Append(",\"text_key\":").Append(JsonEncodedString(opt.TextKey))
               .Append(",\"was_chosen\":").Append(opt.WasChosen ? "true" : "false")
+              .Append(",\"is_locked\":").Append(opt.IsLocked ? "true" : "false")
+              .Append(",\"is_proceed\":").Append(opt.IsProceed ? "true" : "false")
               .Append('}');
         }
         sb.Append("]}");

@@ -144,8 +144,8 @@ def run_one_full_run(
         else:
             last_progress_marker = marker
             stuck_marker_count = 0
-        if stuck_marker_count >= 40:  # ~8s of no observable change
-            summary["stopped"] = f"stuck in {effective!r} — no progress for 40 ticks (marker={marker})"
+        if stuck_marker_count >= 100:  # ~20s of no observable change
+            summary["stopped"] = f"stuck in {effective!r} — no progress for 100 ticks (marker={marker})"
             break
 
         try:
@@ -229,12 +229,36 @@ def _do_map_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *,
 
 
 def _do_event_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
-    options = (obs.get("event") or {}).get("options") or []
+    event = obs.get("event") or {}
+    options = event.get("options") or []
+    is_finished = event.get("is_finished")
+    # Day-10.F: when event.is_finished, the UI synthesizes a PROCEED button
+    # but evt.CurrentOptions is empty. Drive choose_event_option anyway —
+    # the mod-side handler finds and clicks the synthetic button.
+    if is_finished:
+        if verbose: print(f"[full-run]   event → is_finished=true, clicking synthetic PROCEED")
+        c.choose_event_option(0)
+        return
     if not options:
+        if verbose: print("[full-run]   event → no options yet; waiting")
         time.sleep(0.3)
         return
-    pick = rng.choice(options)
-    if verbose: print(f"[full-run]   event → option_idx={pick['option_idx']} ({pick.get('text_key')})")
+    # Filter out options that the engine has already marked as chosen (locked).
+    available = [o for o in options if not o.get("was_chosen") and not o.get("is_locked")]
+    if not available:
+        if verbose: print(f"[full-run]   event → all {len(options)} options chosen/locked; waiting")
+        time.sleep(0.3)
+        return
+    pick = rng.choice(available)
+    if verbose:
+        opt_summary = ", ".join(
+            f"[{o['option_idx']}]{o.get('text_key', '')}"
+            f"{'*chosen' if o.get('was_chosen') else ''}"
+            f"{'*locked' if o.get('is_locked') else ''}"
+            f"{'*proc' if o.get('is_proceed') else ''}"
+            for o in options
+        )
+        print(f"[full-run]   event opts=[{opt_summary}] → pick {pick['option_idx']}")
     c.choose_event_option(pick["option_idx"])
 
 

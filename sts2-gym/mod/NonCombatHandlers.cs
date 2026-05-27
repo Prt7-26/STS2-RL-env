@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens;
@@ -130,6 +131,42 @@ internal static class NonCombatHandlers
             return (500, "{\"ok\":false,\"error\":\"no local event\"}");
 
         var options = evt.CurrentOptions;
+        // Day-10.F: when evt.IsFinished, NEventRoom.SetOptions synthesizes a
+        // PROCEED EventOption on the UI side but evt.CurrentOptions stays empty
+        // (see NEventRoom.cs:200-204). The synthetic button lives only as an
+        // NEventOptionButton in the scene tree. Find + click it directly.
+        if (evt.IsFinished && (options == null || options.Count == 0))
+        {
+            Log.Info($"{Tag} event '{evt.Id.Entry}' IsFinished — clicking synthetic PROCEED button");
+            // The event room node is NRun.Instance's current room scene.
+            // Find any NEventOptionButton with Option.IsProceed.
+            // (UiHelper.FindAll walks the whole scene tree from a root node.)
+            var roomNode = NRun.Instance;
+            if (roomNode == null)
+                return (500, "{\"ok\":false,\"error\":\"NRun.Instance null on finished event\"}");
+
+            NEventOptionButton? proceedBtn = null;
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < deadline && proceedBtn == null)
+            {
+                proceedBtn = UiHelper.FindAll<NEventOptionButton>(roomNode)
+                    .FirstOrDefault(b => b.Option != null && b.Option.IsProceed && !b.Option.IsLocked);
+                if (proceedBtn != null) break;
+                await Task.Delay(100);
+            }
+            if (proceedBtn == null)
+                return (500, "{\"ok\":false,\"error\":\"no PROCEED NEventOptionButton found on finished event\"}");
+
+            try { await UiHelper.Click(proceedBtn); }
+            catch (Exception ex)
+            {
+                return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
+            }
+            await Task.Delay(500);
+            HttpBridge.RefreshObservation();
+            return (200, $"{{\"ok\":true,\"action\":\"choose_event_option\",\"proceeded_finished_event\":true,\"event_id\":{JsonStr(evt.Id.Entry)}}}");
+        }
+
         if (options == null || options.Count == 0)
             return (409, "{\"ok\":false,\"error\":\"event has no current options\"}");
         if (idx < 0 || idx >= options.Count)
@@ -218,9 +255,24 @@ internal static class NonCombatHandlers
             return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
 
-        // The screen close fires NChooseARelicSelection.Selected which lets the
-        // event/treasure chain continue. Brief settle.
-        await Task.Delay(300);
+        // After clicking, NChooseARelicSelection closes async (fade-out animation),
+        // then the awaiting EventOption.Chosen() continuation resumes, then the
+        // event's OnChosen function continues — possibly with more SetEventState
+        // calls. We need to wait long enough for this whole chain to settle so
+        // /observe reflects the post-event-state options. 2s budget.
+        var settleDeadline = DateTime.UtcNow.AddSeconds(2.5);
+        while (DateTime.UtcNow < settleDeadline)
+        {
+            await Task.Delay(100);
+            // Bail early when the relic-select screen is no longer on top.
+            var top = NOverlayStack.Instance?.Peek();
+            if (top is not MegaCrit.Sts2.Core.Nodes.Screens.NChooseARelicSelection)
+            {
+                // Continue waiting a little for downstream chain.
+                await Task.Delay(400);
+                break;
+            }
+        }
         var aqs = RunManager.Instance.ActionQueueSet;
         if (aqs != null)
         {
