@@ -85,6 +85,12 @@ def to_text(action: dict[str, Any], context: dict[str, Any] | None = None) -> st
         return "leave reward"
     if t == "proceed_after_game_over":
         return "proceed"
+    if t == "shop_buy":
+        return f"shop buy {action.get('entry_idx', '?')}"
+    if t == "shop_leave":
+        return "shop leave"
+    if t == "rest_choose":
+        return f"rest {action.get('option_idx', '?')}"
     return f"<{t} {action}>"
 
 
@@ -144,6 +150,11 @@ _register(r"choose\s+option\s+(?P<i>\d+)",
           lambda m: {"type": "choose_event_option", "option_idx": int(m["i"])})
 _register(r"leave\s+reward", lambda m: {"type": "leave_reward_screen"})
 _register(r"proceed", lambda m: {"type": "proceed_after_game_over"})
+_register(r"shop\s+buy\s+(?P<i>\d+)",
+          lambda m: {"type": "shop_buy", "entry_idx": int(m["i"])})
+_register(r"shop\s+leave", lambda m: {"type": "shop_leave"})
+_register(r"rest\s+(?P<i>\d+)",
+          lambda m: {"type": "rest_choose", "option_idx": int(m["i"])})
 
 
 def from_text(text: str, context: dict[str, Any] | None = None) -> dict[str, Any]:

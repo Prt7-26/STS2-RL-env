@@ -531,7 +531,13 @@ def test_action_codec_non_combat():
     assert from_text("choose option 1") == {"type": "choose_event_option", "option_idx": 1}
     assert from_text("leave reward") == {"type": "leave_reward_screen"}
     assert from_text("proceed") == {"type": "proceed_after_game_over"}
-    print("  ✓ map / event / reward / game_over round-trip")
+    # Day-10.B: shop + rest
+    assert to_text({"type": "shop_buy", "entry_idx": 2}) == "shop buy 2"
+    assert from_text("shop buy 2") == {"type": "shop_buy", "entry_idx": 2}
+    assert from_text("shop leave") == {"type": "shop_leave"}
+    assert to_text({"type": "rest_choose", "option_idx": 0}) == "rest 0"
+    assert from_text("rest 0") == {"type": "rest_choose", "option_idx": 0}
+    print("  ✓ map / event / reward / game_over / shop / rest round-trip")
 
 
 def test_action_codec_parse_error():
@@ -571,6 +577,87 @@ def test_render_json_selector():
     print("  ✓ selector json view")
 
 
+# ============================ Day-11.B LLMActionParser ============================
+
+
+def test_llm_parser_canonical():
+    print("[test] LLMActionParser: canonical input passes through")
+    from sts2_gym.llm_parser import LLMActionParser
+    p = LLMActionParser(context=OBS_PAYLOAD)
+    assert p.parse("end turn") == {"type": "end_turn"}
+    assert p.parse("play strike on A") == {"type": "play_card", "card_idx": 0, "target_combat_id": 10}
+    print("  ✓ canonical inputs unchanged")
+
+
+def test_llm_parser_prose_extraction():
+    print("[test] LLMActionParser: extracts action from surrounding prose")
+    from sts2_gym.llm_parser import LLMActionParser
+    p = LLMActionParser(context=OBS_PAYLOAD)
+    msg = ("I should weaken the front-line first since it's about to attack. "
+           "play Strike on A")
+    a = p.parse(msg)
+    assert a == {"type": "play_card", "card_idx": 0, "target_combat_id": 10}, a
+    # Multiline reasoning then action.
+    msg = "Hmm, energy=3.\nLet me defend.\nplay Defend"
+    a = p.parse(msg)
+    assert a["type"] == "play_card" and a["card_idx"] == 1, a
+    print("  ✓ prose-wrapped actions extracted")
+
+
+def test_llm_parser_synonyms():
+    print("[test] LLMActionParser: synonyms normalize to canonical")
+    from sts2_gym.llm_parser import LLMActionParser
+    p = LLMActionParser(context=OBS_PAYLOAD)
+    a = p.parse("cast Strike on A")
+    assert a == {"type": "play_card", "card_idx": 0, "target_combat_id": 10}, a
+    assert p.parse("end my turn") == {"type": "end_turn"}
+    assert p.parse("skip the rewards") == {"type": "leave_reward_screen"}
+    print("  ✓ attack-with / cast / use / pass turn synonyms")
+
+
+def test_llm_parser_tool_use_json():
+    print("[test] LLMActionParser: tool-use JSON shape")
+    from sts2_gym.llm_parser import LLMActionParser
+    p = LLMActionParser(context=OBS_PAYLOAD)
+    # Pure JSON
+    a = p.parse('{"action": "end_turn"}')
+    assert a == {"type": "end_turn"}, a
+    # JSON embedded in prose
+    a = p.parse('I think I should play strike. Output: {"type": "play_card", "card": "Strike", "target": "A"}')
+    assert a["type"] == "play_card" and a["card_idx"] == 0 and a["target_combat_id"] == 10, a
+    # Tool-use shape with card_idx directly
+    a = p.parse('{"action": "play_card", "card_idx": 1}')
+    assert a == {"type": "play_card", "card_idx": 1}, a
+    print("  ✓ JSON parsed in 3 shapes")
+
+
+def test_llm_parser_ambiguity_resolution():
+    print("[test] LLMActionParser: prefers last action by default")
+    from sts2_gym.llm_parser import LLMActionParser
+    p = LLMActionParser(context=OBS_PAYLOAD, on_ambiguity="last")
+    msg = "first I'll play defend. Actually wait, play strike on A instead"
+    a = p.parse(msg)
+    assert a["target_combat_id"] == 10, a  # Strike on A is the "last" action
+    p_first = LLMActionParser(context=OBS_PAYLOAD, on_ambiguity="first")
+    a = p_first.parse(msg)
+    assert a["card_idx"] == 1, a  # Defend is the "first"
+    print("  ✓ on_ambiguity='last' / 'first'")
+
+
+def test_llm_parser_failure():
+    print("[test] LLMActionParser: garbage → ParseError")
+    from sts2_gym.llm_parser import LLMActionParser
+    from sts2_gym.action_codec import ParseError
+    p = LLMActionParser()
+    for bad in ("", "the weather is nice today", "..."):
+        try:
+            p.parse(bad)
+        except ParseError:
+            continue
+        raise AssertionError(f"expected ParseError for {bad!r}")
+    print("  ✓ rejects empty / off-topic / pure-punct")
+
+
 def main():
     tests = [
         test_encode_observation,
@@ -595,6 +682,13 @@ def main():
         test_action_codec_parse_error,
         test_render_json,
         test_render_json_selector,
+        # Day-11.B
+        test_llm_parser_canonical,
+        test_llm_parser_prose_extraction,
+        test_llm_parser_synonyms,
+        test_llm_parser_tool_use_json,
+        test_llm_parser_ambiguity_resolution,
+        test_llm_parser_failure,
     ]
     for t in tests:
         t()

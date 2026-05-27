@@ -6,11 +6,14 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Entities.Merchant;
+using MegaCrit.Sts2.Core.Entities.RestSite;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
@@ -220,6 +223,151 @@ internal static class NonCombatHandlers
         await Task.Delay(500);
         HttpBridge.RefreshObservation();
         return (200, "{\"ok\":true,\"action\":\"proceed_after_game_over\"}");
+    }
+
+    // -------------------------------------------------- Shop (Day-10.B)
+
+    /// <summary>
+    /// Day-10.B: enumerate the merchant's entries in a stable order so the
+    /// agent can address them by flat index. Order is the same as
+    /// MerchantInventory.AllEntries: character cards, then colorless cards,
+    /// then relics, then potions, then card-removal (if present).
+    /// </summary>
+    public static List<MerchantEntry> FlattenMerchantEntries(MerchantInventory inv)
+    {
+        var list = new List<MerchantEntry>();
+        list.AddRange(inv.CharacterCardEntries);
+        list.AddRange(inv.ColorlessCardEntries);
+        list.AddRange(inv.RelicEntries);
+        list.AddRange(inv.PotionEntries);
+        if (inv.CardRemovalEntry != null) list.Add(inv.CardRemovalEntry);
+        return list;
+    }
+
+    public static async Task<(int, string)> ShopBuyAsync(JsonElement cmd)
+    {
+        if (!cmd.TryGetProperty("entry_idx", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'entry_idx'\"}");
+        int idx = idxProp.GetInt32();
+
+        var state = RunManager.Instance.DebugOnlyGetState();
+        var room = state?.CurrentRoom as MerchantRoom;
+        if (room == null)
+            return (409, "{\"ok\":false,\"error\":\"not in a merchant room\"}");
+
+        var entries = FlattenMerchantEntries(room.Inventory);
+        if (idx < 0 || idx >= entries.Count)
+            return (400, $"{{\"ok\":false,\"error\":\"entry_idx out of range\",\"got\":{idx},\"count\":{entries.Count}}}");
+
+        var entry = entries[idx];
+        if (!entry.IsStocked)
+            return (409, "{\"ok\":false,\"error\":\"entry sold out / unavailable\"}");
+        if (!entry.EnoughGold)
+            return (409, $"{{\"ok\":false,\"error\":\"not enough gold\",\"cost\":{entry.Cost},\"have\":{(state!.Players.FirstOrDefault()?.Gold ?? 0)}}}");
+
+        Log.Info($"{Tag} shop buy entry_idx={idx} type={entry.GetType().Name} cost={entry.Cost}");
+        bool success;
+        try
+        {
+            success = await entry.OnTryPurchaseWrapper(room.Inventory);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"{Tag} OnTryPurchaseWrapper threw: {ex}");
+            return (500, "{\"ok\":false,\"error\":\"OnTryPurchaseWrapper threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+        if (!success)
+            return (409, "{\"ok\":false,\"error\":\"purchase failed (see PurchaseStatus event)\"}");
+
+        // Wait for any selector / animations to drain (CardRemoval kicks a card selector).
+        var aqs = RunManager.Instance.ActionQueueSet;
+        if (aqs != null)
+        {
+            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch (TimeoutException) { /* best effort */ }
+        }
+        await Task.Delay(150);
+        HttpBridge.RefreshObservation();
+
+        return (200, $"{{\"ok\":true,\"action\":\"shop_buy\",\"entry_idx\":{idx},\"type\":{JsonStr(entry.GetType().Name)},\"cost\":{entry.Cost}}}");
+    }
+
+    public static async Task<(int, string)> ShopLeaveAsync()
+    {
+        var state = RunManager.Instance.DebugOnlyGetState();
+        if (state?.CurrentRoom is not MerchantRoom)
+            return (409, "{\"ok\":false,\"error\":\"not in a merchant room\"}");
+
+        // NRun exposes the current MerchantRoom node directly.
+        var roomNode = NRun.Instance?.MerchantRoom;
+        if (roomNode == null)
+            return (500, "{\"ok\":false,\"error\":\"NMerchantRoom node not found via NRun.Instance.MerchantRoom\"}");
+
+        NClickableControl? btn = roomNode.ProceedButton;
+        if (btn == null || !btn.IsEnabled)
+        {
+            btn = UiHelper.FindFirst<NBackButton>(roomNode);
+        }
+        if (btn == null)
+            return (500, "{\"ok\":false,\"error\":\"no leave/back button found\"}");
+
+        Log.Info($"{Tag} shop leave (button={btn.GetType().Name})");
+        try { await UiHelper.Click(btn); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+        await Task.Delay(300);
+        HttpBridge.RefreshObservation();
+        return (200, "{\"ok\":true,\"action\":\"shop_leave\"}");
+    }
+
+    // -------------------------------------------------- Rest (Day-10.B)
+
+    public static async Task<(int, string)> RestChooseAsync(JsonElement cmd)
+    {
+        if (!cmd.TryGetProperty("option_idx", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'option_idx'\"}");
+        int idx = idxProp.GetInt32();
+
+        var state = RunManager.Instance.DebugOnlyGetState();
+        var room = state?.CurrentRoom as RestSiteRoom;
+        if (room == null)
+            return (409, "{\"ok\":false,\"error\":\"not in a rest site\"}");
+
+        var options = room.Options;
+        if (idx < 0 || idx >= options.Count)
+            return (400, $"{{\"ok\":false,\"error\":\"option_idx out of range\",\"got\":{idx},\"count\":{options.Count}}}");
+
+        var option = options[idx];
+        if (!option.IsEnabled)
+            return (409, $"{{\"ok\":false,\"error\":\"option disabled\",\"option_id\":{JsonStr(option.OptionId)}}}");
+
+        Log.Info($"{Tag} rest choose option_idx={idx} option_id={option.OptionId}");
+        bool ok;
+        try
+        {
+            ok = await option.OnSelect();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"{Tag} option.OnSelect threw: {ex}");
+            return (500, "{\"ok\":false,\"error\":\"option.OnSelect threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+        if (!ok)
+            return (409, $"{{\"ok\":false,\"error\":\"OnSelect returned false\",\"option_id\":{JsonStr(option.OptionId)}}}");
+
+        // Wait for any selector / queue (Smith triggers a card-pick selector → ICardSelector path).
+        var aqs = RunManager.Instance.ActionQueueSet;
+        if (aqs != null)
+        {
+            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(15)); }
+            catch (TimeoutException) { /* best effort */ }
+        }
+        await Task.Delay(200);
+        HttpBridge.RefreshObservation();
+
+        return (200, $"{{\"ok\":true,\"action\":\"rest_choose\",\"option_idx\":{idx},\"option_id\":{JsonStr(option.OptionId)}}}");
     }
 
     // -------------------------------------------------- helpers

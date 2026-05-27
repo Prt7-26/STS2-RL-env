@@ -103,6 +103,10 @@ def run_one_full_run(
                 _do_event_step(c, obs, rng, verbose=verbose)
             elif effective == "reward":
                 _do_reward_step(c, verbose=verbose)
+            elif effective == "shop":
+                _do_shop_step(c, obs, rng, verbose=verbose)
+            elif effective == "rest":
+                _do_rest_step(c, obs, rng, verbose=verbose)
             elif effective == "game_over":
                 _do_game_over_step(c, verbose=verbose)
                 summary["stopped"] = "game_over"
@@ -178,6 +182,31 @@ def _do_event_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, 
 def _do_reward_step(c: ModBridgeClient, *, verbose: bool) -> None:
     if verbose: print("[full-run]   reward → leave")
     c.leave_reward_screen()
+
+
+def _do_shop_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
+    """Simple shop policy: buy a random affordable item with 50% chance, else leave."""
+    shop = obs.get("shop") or {}
+    items = shop.get("items") or []
+    affordable = [it for it in items if it.get("is_stocked") and it.get("enough_gold")]
+    if affordable and rng.random() < 0.5:
+        pick = rng.choice(affordable)
+        if verbose: print(f"[full-run]   shop → buy entry_idx={pick['entry_idx']} kind={pick['kind']} id={pick.get('id')} cost={pick['cost']}")
+        c.shop_buy(pick["entry_idx"])
+    else:
+        if verbose: print(f"[full-run]   shop → leave (gold={shop.get('player_gold')}, affordable={len(affordable)}/{len(items)})")
+        c.shop_leave()
+
+
+def _do_rest_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
+    options = (obs.get("rest") or {}).get("options") or []
+    enabled = [o for o in options if o.get("is_enabled")]
+    if not enabled:
+        time.sleep(0.3)
+        return
+    pick = rng.choice(enabled)
+    if verbose: print(f"[full-run]   rest → option_idx={pick['option_idx']} ({pick.get('option_id')})")
+    c.rest_choose(pick["option_idx"])
 
 
 def _do_game_over_step(c: ModBridgeClient, *, verbose: bool) -> None:

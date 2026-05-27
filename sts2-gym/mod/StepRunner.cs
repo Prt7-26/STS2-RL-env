@@ -101,6 +101,10 @@ internal static class StepRunner
             "choose_event_option" => await NonCombatHandlers.ChooseEventOptionAsync(cmd),
             "leave_reward_screen" => await NonCombatHandlers.LeaveRewardScreenAsync(),
             "proceed_after_game_over" => await NonCombatHandlers.ProceedGameOverAsync(),
+            // Day-10.B: shop + rest.
+            "shop_buy" => await NonCombatHandlers.ShopBuyAsync(cmd),
+            "shop_leave" => await NonCombatHandlers.ShopLeaveAsync(),
+            "rest_choose" => await NonCombatHandlers.RestChooseAsync(cmd),
             "noop" => (200, "{\"ok\":true,\"action\":\"noop\"}"),
             _ => (400, "{\"ok\":false,\"error\":\"unknown action type\",\"type\":" + JsonStr(type ?? "") + "}"),
         };

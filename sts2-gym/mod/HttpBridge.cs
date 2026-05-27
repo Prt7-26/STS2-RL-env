@@ -211,11 +211,74 @@ internal static class HttpBridge
             else if (phase == "event") AppendEventJson(sb);
             else if (phase == "reward") AppendRewardJson(sb);
             else if (phase == "game_over") AppendGameOverJson(sb);
+            else if (phase == "shop") AppendShopJson(sb);
+            else if (phase == "rest") AppendRestJson(sb);
         }
         catch (Exception ex)
         {
             Log.Warn($"{Tag} AppendNonCombatJson failed: {ex.Message}");
         }
+    }
+
+    private static void AppendShopJson(StringBuilder sb)
+    {
+        var state = MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState();
+        var room = state?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.MerchantRoom;
+        if (room == null) return;
+        var entries = NonCombatHandlers.FlattenMerchantEntries(room.Inventory);
+        var gold = state!.Players.FirstOrDefault()?.Gold ?? 0;
+        sb.Append(",\"shop\":{");
+        sb.Append("\"player_gold\":").Append(gold);
+        sb.Append(",\"items\":[");
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var e = entries[i];
+            string kind = e switch
+            {
+                MegaCrit.Sts2.Core.Entities.Merchant.MerchantCardEntry => "card",
+                MegaCrit.Sts2.Core.Entities.Merchant.MerchantRelicEntry => "relic",
+                MegaCrit.Sts2.Core.Entities.Merchant.MerchantPotionEntry => "potion",
+                MegaCrit.Sts2.Core.Entities.Merchant.MerchantCardRemovalEntry => "purge",
+                _ => "other",
+            };
+            string? id = e switch
+            {
+                MegaCrit.Sts2.Core.Entities.Merchant.MerchantCardEntry ce => ce.CreationResult?.Card?.Id.Entry,
+                MegaCrit.Sts2.Core.Entities.Merchant.MerchantRelicEntry re => re.Model?.Id.Entry,
+                MegaCrit.Sts2.Core.Entities.Merchant.MerchantPotionEntry pe => pe.Model?.Id.Entry,
+                _ => null,
+            };
+            sb.Append("{\"entry_idx\":").Append(i);
+            sb.Append(",\"kind\":\"").Append(kind).Append('"');
+            sb.Append(",\"id\":").Append(JsonEncodedString(id));
+            sb.Append(",\"cost\":").Append(e.Cost);
+            sb.Append(",\"is_stocked\":").Append(e.IsStocked ? "true" : "false");
+            sb.Append(",\"enough_gold\":").Append(e.EnoughGold ? "true" : "false");
+            sb.Append('}');
+        }
+        sb.Append("]");
+        sb.Append(",\"can_leave\":true");
+        sb.Append('}');
+    }
+
+    private static void AppendRestJson(StringBuilder sb)
+    {
+        var state = MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState();
+        var room = state?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.RestSiteRoom;
+        if (room == null) return;
+        var options = room.Options;
+        sb.Append(",\"rest\":{\"options\":[");
+        for (int i = 0; i < options.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var o = options[i];
+            sb.Append("{\"option_idx\":").Append(i)
+              .Append(",\"option_id\":").Append(JsonEncodedString(o.OptionId))
+              .Append(",\"is_enabled\":").Append(o.IsEnabled ? "true" : "false")
+              .Append('}');
+        }
+        sb.Append("]}");
     }
 
     private static void AppendMapJson(StringBuilder sb)

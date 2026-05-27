@@ -222,6 +222,22 @@ class ModBridgeClient:
         """Dismiss the game-over screen (returns to main menu)."""
         return self._post_json("/step", {"type": "proceed_after_game_over"}, timeout=15.0)
 
+    def shop_buy(self, entry_idx: int) -> dict[str, Any]:
+        """Buy a merchant entry by flat index (see /observe.shop.items[*].entry_idx)."""
+        return self._post_json("/step", {"type": "shop_buy", "entry_idx": entry_idx}, timeout=30.0)
+
+    def shop_leave(self) -> dict[str, Any]:
+        """Leave the merchant room (UI click on proceed/back button)."""
+        return self._post_json("/step", {"type": "shop_leave"}, timeout=15.0)
+
+    def rest_choose(self, option_idx: int) -> dict[str, Any]:
+        """Choose a rest-site option (see /observe.rest.options[*].option_idx).
+
+        Smith/Mend etc. that need a card pick will activate the ICardSelector
+        afterward — agent must resolve via select_pick / select_confirm next.
+        """
+        return self._post_json("/step", {"type": "rest_choose", "option_idx": option_idx}, timeout=30.0)
+
     def reset(
         self,
         *,

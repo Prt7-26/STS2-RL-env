@@ -34,6 +34,7 @@ from sts2_gym.env import (
     encode_observation,
 )
 from sts2_gym.action_codec import ParseError, from_text, to_text
+from sts2_gym.llm_parser import LLMActionParser
 from sts2_gym.registry import UNKNOWN_IDX, Registry
 from sts2_gym.renderer import render_combat, render_json, render_text, strip_bbcode
 
@@ -70,9 +71,10 @@ __all__ = [
     "to_text",
     "from_text",
     "ParseError",
+    "LLMActionParser",
     "render_text",
     "render_combat",
     "render_json",
     "strip_bbcode",
 ]
-__version__ = "0.0.5"
+__version__ = "0.0.6"
