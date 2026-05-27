@@ -111,6 +111,8 @@ internal static class StepRunner
             "relic_pick" => await NonCombatHandlers.RelicPickAsync(cmd),
             // Day-10.G: card-reward sub-screen — NCardHolder pick.
             "card_reward_pick" => await NonCombatHandlers.CardRewardPickAsync(cmd),
+            // Day-10.O: bundle-select sub-screen (event "choose a bundle" outcomes).
+            "bundle_pick" => await NonCombatHandlers.BundlePickAsync(cmd),
             "noop" => (200, "{\"ok\":true,\"action\":\"noop\"}"),
             _ => (400, "{\"ok\":false,\"error\":\"unknown action type\",\"type\":" + JsonStr(type ?? "") + "}"),
         };

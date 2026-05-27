@@ -237,6 +237,10 @@ class ModBridgeClient:
         """Leave the merchant room (UI click on proceed/back button)."""
         return self._post_json("/step", {"type": "shop_leave"}, timeout=15.0)
 
+    def bundle_pick(self, idx: int) -> dict[str, Any]:
+        """Pick a card bundle on NChooseABundleSelectionScreen (event outcome)."""
+        return self._post_json("/step", {"type": "bundle_pick", "idx": idx}, timeout=15.0)
+
     def card_reward_pick(self, idx: int) -> dict[str, Any]:
         """Pick a card on NCardRewardSelectionScreen (sub-screen opened by
         clicking a CardReward NRewardButton on the parent NRewardsScreen).

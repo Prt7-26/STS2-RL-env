@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
@@ -722,6 +723,68 @@ internal static class NonCombatHandlers
         HttpBridge.RefreshObservation();
 
         return (200, $"{{\"ok\":true,\"action\":\"rest_choose\",\"option_idx\":{idx},\"option_id\":{JsonStr(option.OptionId)},\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
+    }
+
+    // -------------------------------------------------- Bundle select (Day-10.O)
+
+    /// <summary>
+    /// NChooseABundleSelectionScreen — pick 1 of N card bundles. AutoSlay
+    /// pattern: UiHelper.FindAll&lt;NCardBundle&gt; → click bundle.Hitbox →
+    /// click NConfirmButton.
+    /// </summary>
+    public static List<NCardBundle> EnumerateBundles()
+    {
+        var overlay = NOverlayStack.Instance?.Peek();
+        var screen = overlay as NChooseABundleSelectionScreen;
+        if (screen == null) return new();
+        return UiHelper.FindAll<NCardBundle>(screen).ToList();
+    }
+
+    public static async Task<(int, string)> BundlePickAsync(JsonElement cmd)
+    {
+        if (!cmd.TryGetProperty("idx", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'idx'\"}");
+        int idx = idxProp.GetInt32();
+
+        var overlay = NOverlayStack.Instance?.Peek();
+        var screen = overlay as NChooseABundleSelectionScreen;
+        if (screen == null)
+            return (409, "{\"ok\":false,\"error\":\"not on bundle-select screen\"}");
+
+        var bundles = UiHelper.FindAll<NCardBundle>(screen).ToList();
+        if (idx < 0 || idx >= bundles.Count)
+            return (400, $"{{\"ok\":false,\"error\":\"idx out of range\",\"got\":{idx},\"count\":{bundles.Count}}}");
+
+        Log.Info($"{Tag} bundle_pick idx={idx}");
+        try { await UiHelper.Click(bundles[idx].Hitbox); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click(hitbox) threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+        await Task.Delay(400);
+
+        // Confirm step (separate button per AutoSlay pattern).
+        var confirm = UiHelper.FindFirst<NConfirmButton>(screen);
+        if (confirm == null)
+            return (500, "{\"ok\":false,\"error\":\"NConfirmButton not found after bundle pick\"}");
+
+        try { await UiHelper.Click(confirm); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click(confirm) threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+
+        // Wait for screen to close.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            var top = NOverlayStack.Instance?.Peek();
+            if (top is not NChooseABundleSelectionScreen) break;
+            await Task.Delay(80);
+        }
+        await Task.Delay(300);
+        HttpBridge.RefreshObservation();
+        return (200, $"{{\"ok\":true,\"action\":\"bundle_pick\",\"idx\":{idx}}}");
     }
 
     // -------------------------------------------------- Rest leave (Day-10.N)

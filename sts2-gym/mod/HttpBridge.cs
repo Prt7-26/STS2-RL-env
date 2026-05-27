@@ -215,11 +215,35 @@ internal static class HttpBridge
             else if (phase == "rest") AppendRestJson(sb);
             else if (phase == "relic_select") AppendRelicSelectJson(sb);
             else if (phase == "card_reward_select") AppendCardRewardSelectJson(sb);
+            else if (phase == "bundle_select") AppendBundleSelectJson(sb);
         }
         catch (Exception ex)
         {
             Log.Warn($"{Tag} AppendNonCombatJson failed: {ex.Message}");
         }
+    }
+
+    private static void AppendBundleSelectJson(StringBuilder sb)
+    {
+        // Day-10.O: NChooseABundleSelectionScreen — pick 1 of N card bundles.
+        // AutoSlay clicks bundle.Hitbox then NConfirmButton. We collapse this
+        // into a single /step bundle_pick.
+        var bundles = NonCombatHandlers.EnumerateBundles();
+        sb.Append(",\"bundle_select\":{\"count\":").Append(bundles.Count);
+        sb.Append(",\"bundles\":[");
+        for (int i = 0; i < bundles.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"idx\":").Append(i).Append(",\"cards\":[");
+            var cards = bundles[i].Bundle;
+            for (int c = 0; c < (cards?.Count ?? 0); c++)
+            {
+                if (c > 0) sb.Append(',');
+                sb.Append(JsonEncodedString(cards![c].Id.Entry));
+            }
+            sb.Append("]}");
+        }
+        sb.Append("]}");
     }
 
     private static void AppendCardRewardSelectJson(StringBuilder sb)
@@ -518,7 +542,9 @@ internal static class HttpBridge
             if (t == typeof(NDeckCardSelectScreen)) return "card_select";
             if (t == typeof(NSimpleCardSelectScreen)) return "card_select";
             if (t == typeof(NChooseACardSelectionScreen)) return "card_select";
-            if (t == typeof(NChooseABundleSelectionScreen)) return "card_select";
+            // Day-10.O: NChooseABundleSelectionScreen doesn't route through our
+            // ICardSelector — needs its own pick + confirm. Distinct phase.
+            if (t == typeof(NChooseABundleSelectionScreen)) return "bundle_select";
             if (t == typeof(NChooseARelicSelection)) return "relic_select";
             if (t == typeof(NCrystalSphereScreen)) return "event";
         }

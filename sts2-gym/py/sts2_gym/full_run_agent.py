@@ -168,6 +168,8 @@ def run_one_full_run(
                 _do_rest_step(c, obs, rng, verbose=verbose)
             elif effective == "relic_select":
                 _do_relic_select_step(c, obs, rng, verbose=verbose)
+            elif effective == "bundle_select":
+                _do_bundle_select_step(c, obs, rng, verbose=verbose)
             elif effective == "game_over":
                 _do_game_over_step(c, verbose=verbose)
                 summary["stopped"] = "game_over"
@@ -325,6 +327,20 @@ def _do_shop_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *
     else:
         if verbose: print(f"[full-run]   shop → leave (gold={shop.get('player_gold')}, affordable={len(affordable)}/{len(items)})")
         c.shop_leave()
+
+
+def _do_bundle_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
+    """Day-10.O: NChooseABundleSelectionScreen — pick 1 random bundle."""
+    bs = obs.get("bundle_select") or {}
+    bundles = bs.get("bundles") or []
+    if not bundles:
+        time.sleep(0.3)
+        return
+    pick = rng.choice(bundles)
+    if verbose:
+        summary = ", ".join(f"[{b['idx']}]{b.get('cards', [])}" for b in bundles)
+        print(f"[full-run]   bundle_select [{summary}] → pick {pick['idx']}")
+    c.bundle_pick(pick["idx"])
 
 
 def _do_relic_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
