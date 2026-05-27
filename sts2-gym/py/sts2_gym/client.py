@@ -237,6 +237,11 @@ class ModBridgeClient:
         """Leave the merchant room (UI click on proceed/back button)."""
         return self._post_json("/step", {"type": "shop_leave"}, timeout=15.0)
 
+    def relic_pick(self, idx: int) -> dict[str, Any]:
+        """Pick a relic on NChooseARelicSelection (Neow PRECARIOUS_SHEARS,
+        treasure rooms, certain events). See /observe.relic_select.items."""
+        return self._post_json("/step", {"type": "relic_pick", "idx": idx}, timeout=15.0)
+
     def rest_choose(self, option_idx: int) -> dict[str, Any]:
         """Choose a rest-site option (see /observe.rest.options[*].option_idx).
 

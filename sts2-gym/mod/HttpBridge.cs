@@ -213,11 +213,29 @@ internal static class HttpBridge
             else if (phase == "game_over") AppendGameOverJson(sb);
             else if (phase == "shop") AppendShopJson(sb);
             else if (phase == "rest") AppendRestJson(sb);
+            else if (phase == "relic_select") AppendRelicSelectJson(sb);
         }
         catch (Exception ex)
         {
             Log.Warn($"{Tag} AppendNonCombatJson failed: {ex.Message}");
         }
+    }
+
+    private static void AppendRelicSelectJson(StringBuilder sb)
+    {
+        // Day-10.E: NChooseARelicSelection — Neow PRECARIOUS_SHEARS opens this,
+        // treasure rooms too. Buttons exposed by index; click via /step relic_pick.
+        var buttons = NonCombatHandlers.EnumerateRelicButtons();
+        sb.Append(",\"relic_select\":{\"count\":").Append(buttons.Count);
+        sb.Append(",\"items\":[");
+        for (int i = 0; i < buttons.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"idx\":").Append(i)
+              .Append(",\"is_enabled\":").Append(buttons[i].IsEnabled ? "true" : "false")
+              .Append('}');
+        }
+        sb.Append("]}");
     }
 
     private static void AppendShopJson(StringBuilder sb)

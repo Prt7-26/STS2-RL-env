@@ -137,28 +137,99 @@ internal static class NonCombatHandlers
 
         var option = options[idx];
         Log.Info($"{Tag} event '{evt.Id.Entry}' choose option idx={idx}");
+
+        // Day-10.E: option.Chosen() awaits the FULL effect chain — including any
+        // sub-screen the option opens (NChooseARelicSelection for Neow's
+        // PRECARIOUS_SHEARS, NCardRewardSelectionScreen for some events, our
+        // own ICardSelector for SimpleGrid-based picks, …). We can't await it
+        // to completion: the agent's next /step must be free to drive the sub-
+        // screen via /step relic_pick / select_pick / …
+        //
+        // Fire the Task, wait up to 1.5s for early completion (covers
+        // immediate-effect options like "lose 5 max HP" with no sub-screen),
+        // then return regardless. The agent's next /observe will reveal the
+        // resulting phase / selector / relic-select state and dispatch
+        // accordingly. Engine continues its async chain in the background.
+        Task chosenTask;
         try
         {
-            await option.Chosen();
+            chosenTask = option.Chosen();
         }
         catch (Exception ex)
         {
-            Log.Error($"{Tag} option.Chosen threw: {ex}");
+            Log.Error($"{Tag} option.Chosen threw synchronously: {ex}");
             return (500, "{\"ok\":false,\"error\":\"option.Chosen threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
-
-        // Settle: events can trigger combat, card selection, etc.
-        var aqs = RunManager.Instance.ActionQueueSet;
-        if (aqs != null)
+        bool finished = false;
+        try
         {
-            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(15)); }
-            catch (TimeoutException) { /* best effort */ }
+            await chosenTask.WaitAsync(TimeSpan.FromSeconds(1.5));
+            finished = true;
+        }
+        catch (TimeoutException)
+        {
+            // Sub-screen opened — let the agent drive next.
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"{Tag} option.Chosen async error: {ex.Message}");
         }
         await Task.Delay(200);
         HttpBridge.RefreshObservation();
 
         return (200, $"{{\"ok\":true,\"action\":\"choose_event_option\",\"option_idx\":{idx}," +
-            $"\"event_id\":{JsonStr(evt.Id.Entry)}}}");
+            $"\"event_id\":{JsonStr(evt.Id.Entry)},\"option_finished\":{(finished ? "true" : "false")}}}");
+    }
+
+    // -------------------------------------------------- Relic-select screen (Day-10.E)
+
+    /// <summary>
+    /// Enumerate clickable buttons on the current NChooseARelicSelection screen.
+    /// AutoSlay uses the same pattern (UiHelper.FindAll&lt;NClickableControl&gt;).
+    /// </summary>
+    public static List<NClickableControl> EnumerateRelicButtons()
+    {
+        var overlay = NOverlayStack.Instance?.Peek();
+        var screen = overlay as MegaCrit.Sts2.Core.Nodes.Screens.NChooseARelicSelection;
+        if (screen == null) return new();
+        return UiHelper.FindAll<NClickableControl>(screen).ToList();
+    }
+
+    public static async Task<(int, string)> RelicPickAsync(JsonElement cmd)
+    {
+        if (!cmd.TryGetProperty("idx", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'idx'\"}");
+        int idx = idxProp.GetInt32();
+
+        var buttons = EnumerateRelicButtons();
+        if (buttons.Count == 0)
+            return (409, "{\"ok\":false,\"error\":\"no relic buttons found (not on relic-select screen?)\"}");
+        if (idx < 0 || idx >= buttons.Count)
+            return (400, $"{{\"ok\":false,\"error\":\"idx out of range\",\"got\":{idx},\"count\":{buttons.Count}}}");
+
+        var btn = buttons[idx];
+        if (!btn.IsEnabled)
+            return (409, $"{{\"ok\":false,\"error\":\"relic button disabled\",\"idx\":{idx}}}");
+
+        Log.Info($"{Tag} relic pick idx={idx} type={btn.GetType().Name}");
+        try { await UiHelper.Click(btn); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+
+        // The screen close fires NChooseARelicSelection.Selected which lets the
+        // event/treasure chain continue. Brief settle.
+        await Task.Delay(300);
+        var aqs = RunManager.Instance.ActionQueueSet;
+        if (aqs != null)
+        {
+            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (TimeoutException) { /* best effort */ }
+        }
+        HttpBridge.RefreshObservation();
+
+        return (200, $"{{\"ok\":true,\"action\":\"relic_pick\",\"idx\":{idx}}}");
     }
 
     // -------------------------------------------------- Reward screen — take + leave

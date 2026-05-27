@@ -164,6 +164,8 @@ def run_one_full_run(
                 _do_shop_step(c, obs, rng, verbose=verbose)
             elif effective == "rest":
                 _do_rest_step(c, obs, rng, verbose=verbose)
+            elif effective == "relic_select":
+                _do_relic_select_step(c, obs, rng, verbose=verbose)
             elif effective == "game_over":
                 _do_game_over_step(c, verbose=verbose)
                 summary["stopped"] = "game_over"
@@ -280,6 +282,18 @@ def _do_shop_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *
         c.shop_leave()
 
 
+def _do_relic_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
+    """Day-10.E: NChooseARelicSelection — pick a random enabled relic button."""
+    items = (obs.get("relic_select") or {}).get("items") or []
+    enabled = [it for it in items if it.get("is_enabled")]
+    if not enabled:
+        time.sleep(0.3)
+        return
+    pick = rng.choice(enabled)
+    if verbose: print(f"[full-run]   relic_select → pick idx={pick['idx']}")
+    c.relic_pick(pick["idx"])
+
+
 def _do_rest_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
     options = (obs.get("rest") or {}).get("options") or []
     enabled = [o for o in options if o.get("is_enabled")]
@@ -351,11 +365,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[full-run] DEBUG: jump to encounter={args.encounter} via /reset")
             c.reset(encounter=args.encounter)
         else:
-            # Natural mode: navigate to the first map node so the game's
-            # AddVisitedMapCoord runs and map history is populated correctly.
-            print(f"[full-run] natural mode: navigate first map node")
-            time.sleep(0.5)  # let StartRun's EnterAct finish
-            _navigate_first_map_node(c, rng, verbose=args.verbose)
+            # Natural mode: a fresh run normally starts with the Neow event,
+            # not the map. The outer loop dispatches whatever phase the game
+            # is in — no special handling needed.
+            print(f"[full-run] natural mode: outer loop will dispatch first phase")
+            time.sleep(0.8)  # let StartRun's EnterAct settle
 
     try:
         summary = run_one_full_run(c, rng, max_steps=args.max_steps, verbose=args.verbose)
@@ -371,29 +385,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _navigate_first_map_node(c: ModBridgeClient, rng: random.Random, *, verbose: bool) -> None:
-    """After start_run, wait briefly for the map to settle then click any
-    reachable starting node. Without this, the game stays at the map screen
-    and we'd just dispatch through normal _do_map_step on the first iteration —
-    but if start_run leaves us in a different phase (between_rooms etc.) we
-    might race. This explicit nudge is robust."""
-    # Wait for /observe to show phase=map with reachable nodes.
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        obs = c.observe()
-        if obs.get("phase") == "map":
-            reachable = (obs.get("map") or {}).get("reachable") or []
-            if reachable:
-                pick = rng.choice(reachable)
-                if verbose: print(f"[full-run]   first-map → [{pick['col']},{pick['row']}] {pick['point_type']}")
-                try:
-                    c.choose_map_node(pick["col"], pick["row"])
-                except StepError as e:
-                    print(f"[full-run] first-map nav failed: {e.payload}")
-                return
-        time.sleep(0.2)
-    if verbose:
-        print(f"[full-run] no map appeared within 5s; letting outer loop dispatch")
 
 
 if __name__ == "__main__":
