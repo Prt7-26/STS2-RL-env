@@ -1,27 +1,40 @@
-"""Day-10.A: full-run random agent — loops combat + non-combat phases.
+"""Day-10.D: full-run random agent — loops combat + non-combat phases.
 
-The earlier ``random_agent`` only handled combat; once combat ended on a reward
-screen / map / event / game-over, it gave up. This agent handles all four
-non-combat phases shipped in Day-10.A as well, so a fresh run can be driven
-end-to-end with a uniform-random policy.
+Loops a full single-player STS2 run with a uniform-random policy. Two
+start-up modes:
+
+  Natural (default, when --encounter not given):
+    start_run → choose_map_node(first node) → game's natural progression.
+    Map visited-history populated correctly; first combat is whatever the
+    procedural map placed first.
+
+  Debug-jump (when --encounter is given):
+    start_run → /reset encounter=X → fight that specific combat.
+    CurrentMapCoord stays null for that first combat — visual map shows
+    no progress for that room — but agent state is still consistent.
+    Use this when you need to repeat a specific encounter for a smoke test.
 
 Phase dispatch:
-  * combat            → existing combat + selector logic
-  * card_select       → selector resolution (Day-8.1)
-  * map               → choose random reachable map node
-  * event             → choose random event option
-  * reward            → leave_reward_screen (card picks already routed through
-                        the ICardSelector → selector phase)
-  * game_over         → proceed_after_game_over, then stop
-  * combat_pending    → wait briefly; combat will materialize
-  * shop / rest / ... → not supported yet (Day-10.B). Agent stops with a clear
-                        log line so you can switch encounters or restart.
+  * combat        — combat actions + in-combat selectors
+  * card_select   — selector resolution (Day-8.1)
+  * map           — random reachable node
+  * event         — random option
+  * reward        — claim gold/potion/relic items; card-type slots are
+                    SKIPPED (the engine's card-reward sub-screen path
+                    bypasses our ICardSelector hook — supporting it
+                    needs the dedicated card_reward_pick action, deferred
+                    to Day-10.E). Skipping a card slot is legal: the
+                    game lets us leave the reward screen with it
+                    unclaimed.
+  * shop / rest   — random buy / option pick
+  * game_over     — loop-click any enabled button until phase changes
+                    (death → unlock-history → main menu is 2-3 screens)
 
 Usage::
 
     cd sts2-gym/py
-    python -m sts2_gym.full_run_agent --character IRONCLAD --ascension 0 --seed 7
-    python -m sts2_gym.full_run_agent --max-steps 500 --verbose
+    python -m sts2_gym.full_run_agent --character IRONCLAD --max-steps 800
+    python -m sts2_gym.full_run_agent --character IRONCLAD --encounter TOADPOLES_WEAK
 """
 from __future__ import annotations
 
@@ -33,6 +46,29 @@ from typing import Any
 
 from sts2_gym.client import ModBridgeClient, StepError
 from sts2_gym.random_agent import _pick_random_action
+
+
+def _progress_marker(obs: dict[str, Any]) -> tuple:
+    """Reduce the obs to a compact "did anything change?" fingerprint. Used by
+    the outer loop's stuck detector — if this marker is identical for many
+    consecutive iterations, we're not making progress and should bail."""
+    phase = obs.get("phase")
+    sel = obs.get("selector") or {}
+    combat = obs.get("combat") or {}
+    p0 = (combat.get("players") or [{}])[0]
+    return (
+        phase,
+        bool(sel.get("active")),
+        len(sel.get("accumulator") or []),
+        combat.get("round"),
+        p0.get("hand_count"),
+        p0.get("energy"),
+        len((obs.get("map") or {}).get("reachable") or []),
+        len((obs.get("event") or {}).get("options") or []),
+        len((obs.get("reward") or {}).get("items") or []),
+        len((obs.get("shop") or {}).get("items") or []),
+        len((obs.get("rest") or {}).get("options") or []),
+    )
 
 
 def _summarize_phase(obs: dict[str, Any]) -> str:
@@ -68,6 +104,9 @@ def run_one_full_run(
     steps = 0
     last_phase = None
     consecutive_unknown = 0
+    consecutive_same_phase = 0
+    last_progress_marker: tuple | None = None
+    stuck_marker_count = 0
     t0 = time.monotonic()
 
     while steps < max_steps:
@@ -88,8 +127,26 @@ def run_one_full_run(
         if effective != last_phase:
             summary["phases_visited"].append(effective)
             last_phase = effective
+            consecutive_same_phase = 0
+            last_progress_marker = None
+            stuck_marker_count = 0
             if verbose:
                 print(f"[full-run] step={steps:>3} {_summarize_phase(obs)}")
+        else:
+            consecutive_same_phase += 1
+
+        # Stuck detection: if a phase makes no observable progress for N steps,
+        # abort cleanly. Marker = (phase, round, hand_count, selector_state...)
+        # — any meaningful state change resets the counter.
+        marker = _progress_marker(obs)
+        if marker == last_progress_marker:
+            stuck_marker_count += 1
+        else:
+            last_progress_marker = marker
+            stuck_marker_count = 0
+        if stuck_marker_count >= 40:  # ~8s of no observable change
+            summary["stopped"] = f"stuck in {effective!r} — no progress for 40 ticks (marker={marker})"
+            break
 
         try:
             if effective == "card_select":
@@ -180,23 +237,32 @@ def _do_event_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, 
 
 
 def _do_reward_step(c: ModBridgeClient, obs: dict[str, Any] | None = None, *, verbose: bool) -> None:
-    """Day-10.C: greedily take any enabled reward items, then leave.
+    """Day-10.D: claim non-card rewards (gold/potion/relic), then leave.
 
-    Each take_reward_item may activate the ICardSelector (card reward sub-
-    screen) — in that case the outer loop sees selector_active=true on the
-    next /observe and dispatches to the selector branch first. We just take
-    one item per call; the outer loop drives the cycle.
+    Card rewards are intentionally skipped — clicking their NRewardButton
+    opens NCardRewardSelectionScreen which awaits its own CardsSelected()
+    Task, NOT routed through our ICardSelector. Until Day-10.E adds a
+    dedicated card_reward_pick action, the safe behavior is to leave card
+    slots unclaimed (the game lets us leave the reward screen with them).
     """
     reward = (obs or {}).get("reward") or {}
     items = reward.get("items") or []
-    enabled = [it for it in items if it.get("is_enabled")]
-    if enabled:
-        pick = enabled[0]
+    # Filter to claim-able non-card items.
+    eligible = [
+        it for it in items
+        if it.get("is_enabled")
+        and (it.get("reward_type") or "").lower() not in ("cardreward",)
+    ]
+    if eligible:
+        pick = eligible[0]
         if verbose: print(f"[full-run]   reward → take idx={pick['idx']} type={pick.get('reward_type')}")
         c.take_reward_item(pick["idx"])
         return
-    # Nothing more to claim — leave the screen.
-    if verbose: print("[full-run]   reward → leave (nothing left)")
+    # No more non-card items to claim — leave.
+    skipped_cards = [it for it in items if it.get("is_enabled") and (it.get("reward_type") or "").lower() == "cardreward"]
+    if verbose:
+        skip_note = f" (skipping {len(skipped_cards)} card reward)" if skipped_cards else ""
+        print(f"[full-run]   reward → leave{skip_note}")
     c.leave_reward_screen()
 
 
@@ -226,20 +292,34 @@ def _do_rest_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *
 
 
 def _do_game_over_step(c: ModBridgeClient, *, verbose: bool) -> None:
-    if verbose: print("[full-run]   game_over → proceed (back to main menu)")
-    try:
-        c.proceed_after_game_over()
-    except StepError as e:
-        # Game-over screen might not have a NProceedButton; fall through.
-        print(f"[full-run]   game_over proceed errored: {e.payload}")
+    """Day-10.D: game-over → main menu can have multiple screens (death
+    summary → unlock history → main menu). Loop-click until phase changes
+    away from game_over, up to 5 attempts."""
+    for attempt in range(5):
+        if verbose: print(f"[full-run]   game_over → proceed (attempt {attempt+1})")
+        try:
+            c.proceed_after_game_over()
+        except StepError as e:
+            if verbose: print(f"[full-run]   game_over proceed errored: {e.payload}")
+            break
+        time.sleep(0.5)
+        try:
+            phase = c.observe().get("phase")
+        except Exception:
+            break
+        if phase != "game_over":
+            if verbose: print(f"[full-run]   game_over cleared → phase={phase!r}")
+            return
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Day-10.A full-run random agent")
+    parser = argparse.ArgumentParser(description="Day-10.D full-run random agent")
     parser.add_argument("--character", default=None, help="auto-start a new run with this character (else use current)")
     parser.add_argument("--ascension", type=int, default=0)
     parser.add_argument("--run-seed", default=None)
-    parser.add_argument("--encounter", default=None, help="initial encounter to jump to after start_run")
+    parser.add_argument("--encounter", default=None,
+                        help="DEBUG: force first combat to this encounter via /reset. Bypasses map "
+                             "(CurrentMapCoord stays null for first room). Omit for natural map progression.")
     parser.add_argument("--seed", type=int, default=42, help="agent RNG seed (action randomness)")
     parser.add_argument("--max-steps", type=int, default=500)
     parser.add_argument("--verbose", action="store_true")
@@ -266,8 +346,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[full-run] start_run failed: {e.payload}")
             return 1
         if args.encounter is not None:
-            print(f"[full-run] jump to initial encounter={args.encounter}")
+            # Debug-jump mode: force the first combat to a specific encounter
+            # by reusing /reset. Skips the natural "first map node" navigation.
+            print(f"[full-run] DEBUG: jump to encounter={args.encounter} via /reset")
             c.reset(encounter=args.encounter)
+        else:
+            # Natural mode: navigate to the first map node so the game's
+            # AddVisitedMapCoord runs and map history is populated correctly.
+            print(f"[full-run] natural mode: navigate first map node")
+            time.sleep(0.5)  # let StartRun's EnterAct finish
+            _navigate_first_map_node(c, rng, verbose=args.verbose)
 
     try:
         summary = run_one_full_run(c, rng, max_steps=args.max_steps, verbose=args.verbose)
@@ -281,6 +369,31 @@ def main(argv: list[str] | None = None) -> int:
         if k == "errors" and not v: continue
         print(f"  {k} = {v}")
     return 0
+
+
+def _navigate_first_map_node(c: ModBridgeClient, rng: random.Random, *, verbose: bool) -> None:
+    """After start_run, wait briefly for the map to settle then click any
+    reachable starting node. Without this, the game stays at the map screen
+    and we'd just dispatch through normal _do_map_step on the first iteration —
+    but if start_run leaves us in a different phase (between_rooms etc.) we
+    might race. This explicit nudge is robust."""
+    # Wait for /observe to show phase=map with reachable nodes.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        obs = c.observe()
+        if obs.get("phase") == "map":
+            reachable = (obs.get("map") or {}).get("reachable") or []
+            if reachable:
+                pick = rng.choice(reachable)
+                if verbose: print(f"[full-run]   first-map → [{pick['col']},{pick['row']}] {pick['point_type']}")
+                try:
+                    c.choose_map_node(pick["col"], pick["row"])
+                except StepError as e:
+                    print(f"[full-run] first-map nav failed: {e.payload}")
+                return
+        time.sleep(0.2)
+    if verbose:
+        print(f"[full-run] no map appeared within 5s; letting outer loop dispatch")
 
 
 if __name__ == "__main__":
