@@ -571,30 +571,46 @@ internal static class NonCombatHandlers
             return (409, $"{{\"ok\":false,\"error\":\"not enough gold\",\"cost\":{entry.Cost},\"have\":{(state!.Players.FirstOrDefault()?.Gold ?? 0)}}}");
 
         Log.Info($"{Tag} shop buy entry_idx={idx} type={entry.GetType().Name} cost={entry.Cost}");
-        bool success;
+        // Day-10.L: same deadlock guard as RestChooseAsync. CardRemoval entry's
+        // OnTryPurchase opens a deck-card-pick selector (CardSelectCmd → our
+        // Selector). Awaiting fully would deadlock _stepLock.
+        Task<bool> purchaseTask;
         try
         {
-            success = await entry.OnTryPurchaseWrapper(room.Inventory);
+            purchaseTask = entry.OnTryPurchaseWrapper(room.Inventory);
         }
         catch (Exception ex)
         {
-            Log.Error($"{Tag} OnTryPurchaseWrapper threw: {ex}");
+            Log.Error($"{Tag} OnTryPurchaseWrapper threw synchronously: {ex}");
             return (500, "{\"ok\":false,\"error\":\"OnTryPurchaseWrapper threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
-        if (!success)
+        bool finished = false;
+        bool success = true;
+        try
+        {
+            await purchaseTask.WaitAsync(TimeSpan.FromSeconds(1.5));
+            finished = true;
+            success = purchaseTask.Result;
+        }
+        catch (TimeoutException) { /* sub-screen opened, agent drives next */ }
+        catch (Exception ex) { Log.Warn($"{Tag} purchase async error: {ex.Message}"); }
+
+        if (finished && !success)
             return (409, "{\"ok\":false,\"error\":\"purchase failed (see PurchaseStatus event)\"}");
 
-        // Wait for any selector / animations to drain (CardRemoval kicks a card selector).
-        var aqs = RunManager.Instance.ActionQueueSet;
-        if (aqs != null)
+        if (finished)
         {
-            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(10)); }
-            catch (TimeoutException) { /* best effort */ }
+            var aqs = RunManager.Instance.ActionQueueSet;
+            if (aqs != null)
+            {
+                try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(5)); }
+                catch (TimeoutException) { /* best effort */ }
+            }
         }
         await Task.Delay(150);
         HttpBridge.RefreshObservation();
 
-        return (200, $"{{\"ok\":true,\"action\":\"shop_buy\",\"entry_idx\":{idx},\"type\":{JsonStr(entry.GetType().Name)},\"cost\":{entry.Cost}}}");
+        return (200, $"{{\"ok\":true,\"action\":\"shop_buy\",\"entry_idx\":{idx},\"type\":{JsonStr(entry.GetType().Name)},\"cost\":{entry.Cost},\"finished\":{(finished ? "true" : "false")},\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
     }
 
     public static async Task<(int, string)> ShopLeaveAsync()
@@ -649,30 +665,55 @@ internal static class NonCombatHandlers
             return (409, $"{{\"ok\":false,\"error\":\"option disabled\",\"option_id\":{JsonStr(option.OptionId)}}}");
 
         Log.Info($"{Tag} rest choose option_idx={idx} option_id={option.OptionId}");
-        bool ok;
+        // Day-10.L: don't await option.OnSelect to completion. SMITH (and any
+        // future rest option that picks cards) opens a sub-screen routed
+        // through CardSelectCmd → our ICardSelector → blocks until /step
+        // select_pick. But we're holding _stepLock here so select_pick can't
+        // proceed → full deadlock, /observe hangs because HTTP listener is
+        // single-threaded. Same pattern as PlayCardAsync (Day-8.1) and
+        // ChooseEventOptionAsync (Day-10.E): short wait + early return.
+        Task<bool> selectTask;
         try
         {
-            ok = await option.OnSelect();
+            selectTask = option.OnSelect();
         }
         catch (Exception ex)
         {
-            Log.Error($"{Tag} option.OnSelect threw: {ex}");
+            Log.Error($"{Tag} option.OnSelect threw synchronously: {ex}");
             return (500, "{\"ok\":false,\"error\":\"option.OnSelect threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
-        if (!ok)
-            return (409, $"{{\"ok\":false,\"error\":\"OnSelect returned false\",\"option_id\":{JsonStr(option.OptionId)}}}");
-
-        // Wait for any selector / queue (Smith triggers a card-pick selector → ICardSelector path).
-        var aqs = RunManager.Instance.ActionQueueSet;
-        if (aqs != null)
+        bool finished = false;
+        bool ok = true;
+        try
         {
-            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(15)); }
-            catch (TimeoutException) { /* best effort */ }
+            await selectTask.WaitAsync(TimeSpan.FromSeconds(1.5));
+            finished = true;
+            ok = selectTask.Result;
+        }
+        catch (TimeoutException)
+        {
+            // Sub-screen opened (e.g. SMITH's card pick) — agent drives next.
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"{Tag} option.OnSelect async error: {ex.Message}");
+        }
+
+        // If the option already finished synchronously (HEAL with no sub-screen),
+        // also wait briefly for any post-effect queue to drain.
+        if (finished)
+        {
+            var aqs = RunManager.Instance.ActionQueueSet;
+            if (aqs != null)
+            {
+                try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(5)); }
+                catch (TimeoutException) { /* best effort */ }
+            }
         }
         await Task.Delay(200);
         HttpBridge.RefreshObservation();
 
-        return (200, $"{{\"ok\":true,\"action\":\"rest_choose\",\"option_idx\":{idx},\"option_id\":{JsonStr(option.OptionId)}}}");
+        return (200, $"{{\"ok\":true,\"action\":\"rest_choose\",\"option_idx\":{idx},\"option_id\":{JsonStr(option.OptionId)},\"finished\":{(finished ? "true" : "false")},\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
     }
 
     // -------------------------------------------------- helpers
