@@ -33,8 +33,9 @@ from sts2_gym.env import (
     decode_action,
     encode_observation,
 )
+from sts2_gym.action_codec import ParseError, from_text, to_text
 from sts2_gym.registry import UNKNOWN_IDX, Registry
-from sts2_gym.renderer import render_combat, render_text, strip_bbcode
+from sts2_gym.renderer import render_combat, render_json, render_text, strip_bbcode
 
 # Register the env with Gymnasium so users can `gym.make("STS2-Combat-v0")`.
 try:
@@ -66,8 +67,12 @@ __all__ = [
     "encode_observation",
     "build_action_mask",
     "decode_action",
+    "to_text",
+    "from_text",
+    "ParseError",
     "render_text",
     "render_combat",
+    "render_json",
     "strip_bbcode",
 ]
-__version__ = "0.0.4"
+__version__ = "0.0.5"

@@ -159,7 +159,13 @@ internal static class ScenarioInjector
             catch (Exception ex)
             {
                 Log.Error($"{Tag} jump-to-encounter failed: {ex}");
-                return (500, "{\"ok\":false,\"error\":\"jump_to_encounter failed\",\"message\":" + JsonStr(ex.Message) + "}");
+                // Day-9.2.2: include stack trace so we can pinpoint which sub-node NREs
+                // when EnterRoomDebug runs against a freshly-created NRun (Godot _Ready
+                // timing race).
+                return (500, "{\"ok\":false,\"error\":\"jump_to_encounter failed\"" +
+                    ",\"message\":" + JsonStr(ex.Message) +
+                    ",\"type\":" + JsonStr(ex.GetType().FullName) +
+                    ",\"stack\":" + JsonStr(ex.StackTrace ?? "") + "}");
             }
         }
 

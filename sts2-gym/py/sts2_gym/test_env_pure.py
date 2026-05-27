@@ -485,6 +485,92 @@ def test_render_text_selector():
     print(f"  ✓ selector render emitted {len(text.splitlines())} lines")
 
 
+# ============================ Day-11.A action codec + json renderer ============================
+
+
+def test_action_codec_combat_no_target():
+    print("[test] action_codec: combat no-target")
+    from sts2_gym.action_codec import to_text, from_text
+    a = {"type": "end_turn"}
+    assert to_text(a) == "end turn"
+    np.testing.assert_equal(from_text("end turn"), {"type": "end_turn"})
+    np.testing.assert_equal(from_text("END TURN"), {"type": "end_turn"})
+    print("  ✓ end turn round-trip")
+
+
+def test_action_codec_play_card_with_context():
+    print("[test] action_codec: play_card with context resolves card_idx + target_letter")
+    from sts2_gym.action_codec import to_text, from_text
+    # to_text uses context to print friendly name
+    a = {"type": "play_card", "card_idx": 0, "target_combat_id": 10}
+    assert "STRIKE_RED" in to_text(a, context=OBS_PAYLOAD)
+    assert " on A" in to_text(a, context=OBS_PAYLOAD)
+    # from_text resolves "play strike on A" → card_idx=0, target_combat_id=10
+    parsed = from_text("play strike on A", context=OBS_PAYLOAD)
+    assert parsed == {"type": "play_card", "card_idx": 0, "target_combat_id": 10}, parsed
+    print("  ✓ play_card round-trip with context")
+
+
+def test_action_codec_selector():
+    print("[test] action_codec: selector actions")
+    from sts2_gym.action_codec import to_text, from_text
+    assert to_text({"type": "select_pick", "option_idx": 2}) == "select pick 2"
+    assert from_text("select pick 2") == {"type": "select_pick", "option_idx": 2}
+    assert to_text({"type": "select_confirm"}) == "select confirm"
+    assert from_text("select confirm") == {"type": "select_confirm"}
+    assert from_text("Select Skip") == {"type": "select_skip"}
+    print("  ✓ select_* round-trip")
+
+
+def test_action_codec_non_combat():
+    print("[test] action_codec: non-combat actions")
+    from sts2_gym.action_codec import to_text, from_text
+    assert to_text({"type": "choose_map_node", "col": 3, "row": 5}) == "choose map 3,5"
+    assert from_text("choose map 3,5") == {"type": "choose_map_node", "col": 3, "row": 5}
+    assert to_text({"type": "choose_event_option", "option_idx": 1}) == "choose option 1"
+    assert from_text("choose option 1") == {"type": "choose_event_option", "option_idx": 1}
+    assert from_text("leave reward") == {"type": "leave_reward_screen"}
+    assert from_text("proceed") == {"type": "proceed_after_game_over"}
+    print("  ✓ map / event / reward / game_over round-trip")
+
+
+def test_action_codec_parse_error():
+    print("[test] action_codec: parse failures raise ParseError")
+    from sts2_gym.action_codec import from_text, ParseError
+    for bad in ("", "lol whatever", "play"):
+        try:
+            from_text(bad)
+        except ParseError:
+            continue
+        raise AssertionError(f"expected ParseError for {bad!r}")
+    print("  ✓ rejects empty / nonsense / partial input")
+
+
+def test_render_json():
+    print("[test] render_json combat shape")
+    from sts2_gym.renderer import render_json
+    j = render_json(OBS_PAYLOAD, MASK_PAYLOAD)
+    assert j["phase"] == "combat"
+    assert "combat" in j
+    assert j["combat"]["encounter"] == "CHOMPERS_NORMAL"
+    assert j["combat"]["round"] == 3
+    assert j["combat"]["player"]["hp"] == 61
+    assert len(j["combat"]["enemies"]) == 2
+    assert j["combat"]["enemies"][0]["letter"] == "A"
+    assert j["combat"]["enemies"][0]["hp"] == 40
+    assert j["combat"]["piles"]["hand"][0]["id"] == "STRIKE_RED"
+    print(f"  ✓ render_json keys: {sorted(j.keys())}")
+
+
+def test_render_json_selector():
+    print("[test] render_json selector shape")
+    from sts2_gym.renderer import render_json
+    j = render_json(SELECTOR_OBS, SELECTOR_MASK)
+    assert j["selector"]["min_select"] == 1
+    assert j["selector"]["options"][0]["card_id"] == "STRIKE_RED"
+    print("  ✓ selector json view")
+
+
 def main():
     tests = [
         test_encode_observation,
@@ -501,6 +587,14 @@ def main():
         test_decode_selector_actions,
         test_encode_obs_selector,
         test_render_text_selector,
+        # Day-11.A
+        test_action_codec_combat_no_target,
+        test_action_codec_play_card_with_context,
+        test_action_codec_selector,
+        test_action_codec_non_combat,
+        test_action_codec_parse_error,
+        test_render_json,
+        test_render_json_selector,
     ]
     for t in tests:
         t()

@@ -192,8 +192,98 @@ internal static class HttpBridge
         // the selection before /step play_card / end_turn / next-phase actions become
         // legal again.
         AppendSelectorJson(sb);
+        // Day-10.A: surface non-combat phase context so agents know what's actionable.
+        AppendNonCombatJson(sb, phase);
         sb.Append(",\"run\":").Append(runJson).Append('}');
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Day-10.A: append "map"/"event"/"reward"/"game_over" fields when applicable.
+    /// Each phase-specific block is best-effort and skipped on any read error so
+    /// the rest of /observe stays serviceable.
+    /// </summary>
+    private static void AppendNonCombatJson(StringBuilder sb, string phase)
+    {
+        try
+        {
+            if (phase == "map") AppendMapJson(sb);
+            else if (phase == "event") AppendEventJson(sb);
+            else if (phase == "reward") AppendRewardJson(sb);
+            else if (phase == "game_over") AppendGameOverJson(sb);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"{Tag} AppendNonCombatJson failed: {ex.Message}");
+        }
+    }
+
+    private static void AppendMapJson(StringBuilder sb)
+    {
+        var state = MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState();
+        if (state?.Map == null) return;
+        sb.Append(",\"map\":{");
+        var cur = state.CurrentMapCoord;
+        sb.Append("\"current\":");
+        if (cur.HasValue) sb.Append($"[{cur.Value.col},{cur.Value.row}]"); else sb.Append("null");
+        sb.Append(",\"reachable\":[");
+        HashSet<MegaCrit.Sts2.Core.Map.MapPoint> legal;
+        if (cur.HasValue)
+        {
+            var p = state.Map.GetPoint(cur.Value);
+            legal = p?.Children ?? new HashSet<MegaCrit.Sts2.Core.Map.MapPoint>();
+        }
+        else legal = state.Map.startMapPoints;
+        var first = true;
+        foreach (var p in legal)
+        {
+            if (!first) sb.Append(',');
+            sb.Append("{\"col\":").Append(p.coord.col).Append(",\"row\":").Append(p.coord.row)
+              .Append(",\"point_type\":").Append(JsonEncodedString(p.PointType.ToString())).Append('}');
+            first = false;
+        }
+        sb.Append(']');
+        sb.Append(",\"act_index\":").Append(state.CurrentActIndex);
+        sb.Append('}');
+    }
+
+    private static void AppendEventJson(StringBuilder sb)
+    {
+        var state = MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState();
+        var room = state?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.EventRoom;
+        if (room == null) return;
+        var evt = MegaCrit.Sts2.Core.Runs.RunManager.Instance.EventSynchronizer.GetLocalEvent();
+        if (evt == null) return;
+        sb.Append(",\"event\":{");
+        sb.Append("\"id\":").Append(JsonEncodedString(evt.Id.Entry));
+        sb.Append(",\"options\":[");
+        var options = evt.CurrentOptions;
+        for (int i = 0; i < (options?.Count ?? 0); i++)
+        {
+            if (i > 0) sb.Append(',');
+            var opt = options![i];
+            sb.Append("{\"option_idx\":").Append(i)
+              .Append(",\"text_key\":").Append(JsonEncodedString(opt.TextKey))
+              .Append(",\"was_chosen\":").Append(opt.WasChosen ? "true" : "false")
+              .Append('}');
+        }
+        sb.Append("]}");
+    }
+
+    private static void AppendRewardJson(StringBuilder sb)
+    {
+        // Card-reward picks already go through ICardSelector → "selector" field.
+        // Here we just expose that the reward screen is up so the agent knows it
+        // can /step leave_reward_screen (after picking any non-card rewards via UI,
+        // which Day-10.B will support).
+        var overlay = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.Peek();
+        sb.Append(",\"reward\":{\"screen\":").Append(JsonEncodedString(overlay?.GetType().Name ?? "unknown"))
+          .Append(",\"can_leave\":true}");
+    }
+
+    private static void AppendGameOverJson(StringBuilder sb)
+    {
+        sb.Append(",\"game_over\":{\"can_proceed\":true}");
     }
 
     /// <summary>

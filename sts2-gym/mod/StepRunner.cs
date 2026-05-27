@@ -96,6 +96,11 @@ internal static class StepRunner
             "select_unpick" => await SelectUnpickAsync(cmd),
             "select_confirm" => await SelectConfirmAsync(),
             "select_skip" => await SelectSkipAsync(),
+            // Day-10.A: non-combat phase handlers (map / event / reward / game-over).
+            "choose_map_node" => await NonCombatHandlers.ChooseMapNodeAsync(cmd),
+            "choose_event_option" => await NonCombatHandlers.ChooseEventOptionAsync(cmd),
+            "leave_reward_screen" => await NonCombatHandlers.LeaveRewardScreenAsync(),
+            "proceed_after_game_over" => await NonCombatHandlers.ProceedGameOverAsync(),
             "noop" => (200, "{\"ok\":true,\"action\":\"noop\"}"),
             _ => (400, "{\"ok\":false,\"error\":\"unknown action type\",\"type\":" + JsonStr(type ?? "") + "}"),
         };

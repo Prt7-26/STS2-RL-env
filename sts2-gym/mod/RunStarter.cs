@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Unlocks;
@@ -91,36 +92,34 @@ internal static class RunStarter
 
         try
         {
-            // CharacterModel from ModelDb is used directly in NCharacterSelectScreen.cs:558.
-            // No ToMutable() needed (and no such method exists on this type).
-            var player = MegaCrit.Sts2.Core.Entities.Players.Player.CreateForNewRun(character, UnlockState.all, 1uL);
-            var acts = ActModel.GetDefaultList().Select(a => a.ToMutable()).ToList();
+            // Day-9.2.3: use NGame.Instance.StartNewSingleplayerRun — the canonical
+            // public API the game itself doesn't even use directly from UI (the UI
+            // duplicates the code in NCharacterSelectScreen, but this entrypoint is
+            // public and does ALL the steps: RunState creation, SetUpNewSinglePlayer,
+            // PreloadManager.LoadRunAssets (populates AssetSets.RunSet),
+            // PreloadManager.LoadActAssets (populates AssetSets.Act), FinalizeStartingRelics,
+            // Launch, SetCurrentScene(NRun.Create()), EnterAct(0).
+            //
+            // Our previous attempt called SetUpNewSinglePlayer + SetCurrentScene only,
+            // missing PreloadManager + Launch + EnterAct. The asset preload gap was
+            // what NRE'd inside EnterRoomDebug → CombatRoom.StartCombat →
+            // PreloadManager.LoadAssetSets (SelectMany over null AssetSets.RunSet/.Act).
+            var acts = ActModel.GetDefaultList();
             var modifiers = Array.Empty<ModifierModel>();
 
-            var runState = RunState.CreateForNewRun(
-                new List<MegaCrit.Sts2.Core.Entities.Players.Player> { player },
+            var runState = await NGame.Instance.StartNewSingleplayerRun(
+                character,
+                shouldSave: false,
                 acts,
                 modifiers,
+                seed,
                 GameMode.Standard,
-                ascension,
-                seed);
+                ascension);
 
-            RunManager.Instance.SetUpNewSinglePlayer(runState, shouldSave: false);
-            Log.Info($"{Tag} started: character={character.Id.Entry} ascension={ascension} seed={seed}");
+            Log.Info($"{Tag} StartNewSingleplayerRun done: character={character.Id.Entry} ascension={ascension} seed={seed}");
 
-            // Set FastMode + re-push selector via OnRunStarted handler (it fires
-            // synchronously inside SetUpNewSinglePlayer). Day-9.1: only re-pushes
-            // if selector was enabled; otherwise UI stays clean.
-
-            // Wait for first room to actually generate (rooms are generated as part
-            // of SetUpNewSinglePlayer but events fire asynchronously).
-            var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (DateTime.UtcNow < deadline &&
-                   (RunManager.Instance.DebugOnlyGetState()?.CurrentRoom == null))
-            {
-                await Task.Delay(50);
-            }
-
+            // Brief settle for NRun + Act 0 transition.
+            await Task.Delay(200);
             HttpBridge.RefreshObservation();
 
             var state = RunManager.Instance.DebugOnlyGetState();
@@ -131,7 +130,8 @@ internal static class RunStarter
         catch (Exception ex)
         {
             Log.Error($"{Tag} start failed: {ex}");
-            return (500, $"{{\"ok\":false,\"error\":\"start_run threw\",\"message\":{JsonStr(ex.Message)}}}");
+            return (500, $"{{\"ok\":false,\"error\":\"start_run threw\",\"message\":{JsonStr(ex.Message)}," +
+                $"\"type\":{JsonStr(ex.GetType().FullName)},\"stack\":{JsonStr(ex.StackTrace ?? "")}}}");
         }
     }
 

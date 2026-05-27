@@ -456,10 +456,17 @@ class STS2CombatEnv(gym.Env):
         if self.encounter is None:
             self.encounter = (obs.get("combat") or {}).get("encounter")
             if self.encounter is None:
-                raise RuntimeError(
-                    "STS2CombatEnv: no encounter given and not currently in combat — "
-                    "pass encounter='...' to the constructor."
+                hint = (
+                    "When auto-starting a run with character='...', you must also pass "
+                    "encounter='...' — SetUpNewSinglePlayer creates the RunState but "
+                    "leaves the scene at main menu; /reset's EnterRoomDebug needs an "
+                    "explicit target encounter. Example: "
+                    "STS2CombatEnv(character='IRONCLAD', encounter='CHOMPERS_NORMAL')."
+                ) if self.character else (
+                    "Start a run manually from the main menu first, OR pass "
+                    "character='...' + encounter='...' to auto-start."
                 )
+                raise RuntimeError(f"STS2CombatEnv: no encounter set. {hint}")
 
     def _refresh_caches(self) -> None:
         """Pull latest /observe and /action_mask into the env's caches."""

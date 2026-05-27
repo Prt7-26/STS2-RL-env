@@ -225,4 +225,124 @@ def render_text(obs_payload: dict[str, Any], mask_payload: dict[str, Any] | None
     return f"=== STS2 obs ({header}) ===\n" + "\n---\n".join(sections)
 
 
-__all__ = ["render_text", "render_combat", "render_selector", "strip_bbcode"]
+def render_json(obs_payload: dict[str, Any], mask_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Day-11.A: structured JSON view for LLM tool-use mode.
+
+    Same underlying state as :func:`render_text`, but returns a dict tree
+    instead of formatted prose. Useful when prompting LLMs that respond best
+    in tool-call / JSON-output mode (Claude tool_use, GPT functions).
+
+    Schema is intentionally lean — only fields a human-equivalent observer can
+    see, normalized for LLM consumption (no Godot internal fields, no wall-
+    clock-y fields like ``snapshot_age_ms``).
+    """
+    phase = obs_payload.get("phase")
+    out: dict[str, Any] = {
+        "phase": phase,
+        "in_run": obs_payload.get("in_run"),
+        "partial": obs_payload.get("partial", False),
+    }
+    sel = obs_payload.get("selector") or {}
+    if sel.get("active"):
+        out["selector"] = {
+            "min_select": sel.get("min_select"),
+            "max_select": sel.get("max_select"),
+            "accumulator": list(sel.get("accumulator") or []),
+            "options": [
+                {
+                    "option_idx": o.get("option_idx"),
+                    "card_id": strip_bbcode(o.get("card_id")),
+                    "cost": o.get("cost"),
+                    "is_upgraded": o.get("is_upgraded"),
+                    "target_type": o.get("target_type"),
+                }
+                for o in (sel.get("options") or [])
+            ],
+        }
+
+    combat = obs_payload.get("combat") or {}
+    if combat:
+        creatures = combat.get("creatures") or []
+        player_c = next((c for c in creatures if c.get("is_player")), None)
+        # Hide dead/non-hittable creatures — corpses aren't actionable and just
+        # confuse the prompt.
+        enemies = sorted(
+            [c for c in creatures if not c.get("is_player") and c.get("is_alive")],
+            key=lambda c: c.get("combat_id") or 0,
+        )
+        p0 = (combat.get("players") or [{}])[0]
+        out["combat"] = {
+            "encounter": combat.get("encounter"),
+            "round": combat.get("round"),
+            "play_phase": combat.get("play_phase"),
+            "player": {
+                "hp": (player_c or {}).get("current_hp"),
+                "max_hp": (player_c or {}).get("max_hp"),
+                "block": (player_c or {}).get("block") or 0,
+                "energy": p0.get("energy"),
+                "max_energy": p0.get("max_energy"),
+                "stars": p0.get("stars"),
+                "powers": [
+                    {"id": p.get("id"), "amount": p.get("amount")}
+                    for p in ((player_c or {}).get("powers") or [])
+                ],
+            },
+            "enemies": [
+                {
+                    "letter": chr(ord("A") + i) if i < 26 else f"E{i}",
+                    "combat_id": e.get("combat_id"),
+                    "monster_id": strip_bbcode(e.get("monster_id")),
+                    "hp": e.get("current_hp"),
+                    "max_hp": e.get("max_hp"),
+                    "block": e.get("block") or 0,
+                    "powers": [
+                        {"id": p.get("id"), "amount": p.get("amount")}
+                        for p in (e.get("powers") or [])
+                    ],
+                    "intent": _summarize_intent(e.get("next_move")),
+                }
+                for i, e in enumerate(enemies)
+            ],
+            "piles": {
+                "hand": [_card_view(c) for c in (p0.get("hand") or [])],
+                "draw_count": p0.get("draw_count"),
+                "discard_count": p0.get("discard_count"),
+                "exhaust_count": p0.get("exhaust_count"),
+                "play_count": p0.get("play_count"),
+            },
+        }
+    if "map" in obs_payload:
+        out["map"] = obs_payload["map"]
+    if "event" in obs_payload:
+        out["event"] = obs_payload["event"]
+    if "reward" in obs_payload:
+        out["reward"] = obs_payload["reward"]
+    if "game_over" in obs_payload:
+        out["game_over"] = obs_payload["game_over"]
+    return out
+
+
+def _card_view(c: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": strip_bbcode(c.get("id")),
+        "cost": c.get("cost"),
+        "is_upgraded": c.get("is_upgraded"),
+        "target_type": c.get("target_type"),
+        "can_play": c.get("can_play"),
+    }
+
+
+def _summarize_intent(next_move: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not next_move: return None
+    intents = next_move.get("intents") or []
+    summarized = []
+    for intent in intents:
+        d: dict[str, Any] = {"type": intent.get("type")}
+        if intent.get("total_damage") is not None and intent.get("total_damage") >= 0:
+            d["damage"] = intent["total_damage"]
+            d["repeats"] = intent.get("repeats", 1)
+        summarized.append(d)
+    return {"id": next_move.get("id"), "intents": summarized}
+
+
+__all__ = ["render_text", "render_combat", "render_selector", "render_json", "strip_bbcode"]

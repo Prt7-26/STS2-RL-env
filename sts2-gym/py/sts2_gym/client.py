@@ -203,6 +203,25 @@ class ModBridgeClient:
         """
         return self._get_json("/registry")
 
+    # ---------- Day-10.A non-combat phase actions ----------
+
+    def choose_map_node(self, col: int, row: int) -> dict[str, Any]:
+        """Pick the next map node by coordinate. Must be reachable from current location."""
+        return self._post_json("/step", {"type": "choose_map_node", "col": col, "row": row}, timeout=30.0)
+
+    def choose_event_option(self, option_idx: int) -> dict[str, Any]:
+        """Pick option N on the current event screen. 0-indexed into observe.event.options."""
+        return self._post_json("/step", {"type": "choose_event_option", "option_idx": option_idx}, timeout=30.0)
+
+    def leave_reward_screen(self) -> dict[str, Any]:
+        """Click the post-combat reward screen's proceed button. Any card pick must
+        be done via select_pick first (Day-8 ICardSelector path)."""
+        return self._post_json("/step", {"type": "leave_reward_screen"}, timeout=15.0)
+
+    def proceed_after_game_over(self) -> dict[str, Any]:
+        """Dismiss the game-over screen (returns to main menu)."""
+        return self._post_json("/step", {"type": "proceed_after_game_over"}, timeout=15.0)
+
     def reset(
         self,
         *,
