@@ -961,7 +961,7 @@ P2 milestone 出**两类 offline dataset**：
 | P0 | RngController（轻量版） | ✅ | Day-6 determinism test 通过 |
 | P0 | Gymnasium Env 类 + action mask | ✅ | Day-7 + Day-8 selector slots |
 | P0 | LLM baseline 示例 | ✅ | Day-11.B `examples/claude_baseline.py` ~150 行 |
-| P0 | 文档 + Schema 生成 | ⚠️ | CLAUDE.md / CODING_AGENT_BRIEF.md / IMPLEMENTATION_NOTES.md 已建。**Schema 生成 + 外部 quickstart README 待做** |
+| P0 | 文档 + Schema 生成 | ⚠️ | Day-13: `sts2-gym/README.md` 重写为 30 分钟 quickstart（install → first episode → action space → save/restore → debugging）。CLAUDE.md / CODING_AGENT_BRIEF.md / IMPLEMENTATION_NOTES.md 已建。**JSON Schema codegen 仍待做**（P0 后期 / v0.1） |
 
 ### 12.2 §11 P1 / P2 状态
 

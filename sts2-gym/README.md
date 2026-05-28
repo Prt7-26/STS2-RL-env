@@ -1,166 +1,322 @@
 # STS2-Gym
 
-RL / LLM environment bridge for Slay the Spire 2. Pre-alpha, in active development.
+Gymnasium-style **RL / LLM** environment bridge for Slay the Spire 2.
+The mod runs inside the game process and exposes HTTP endpoints; the Python
+package wraps those endpoints in `gym.Env` and provides text / JSON observation
+views, action codecs, LLM action parsers, and a starting LLM baseline.
 
-> **本工作区当前只在本地开发。** 反编译产物（`../sts2-reverse/`、`*.dll`、`*.pck`）已被 `.gitignore` 屏蔽，仓库本身可推送到公开 GitHub 但**编译需要本地有合法 STS2 副本**。
-
----
-
-## Layout
-
-```
-sts2-gym/
-├── mod/                    # C# mod (loaded into game process via official mod system)
-│   ├── Sts2Gym.csproj
-│   ├── sts2gym.json        # mod manifest
-│   └── Sts2GymMod.cs       # entry + event handlers
-└── py/                     # Python env (gymnasium.Env wrapping mod's HTTP endpoints)
-    └── (empty for now)
-```
-
-Recon documentation lives one level up: [`../sts2-reverse/docs/recon/`](../sts2-reverse/docs/recon/).
-
-Architectural North Star: [`../STS2_GYM_DEV_PLAN.md`](../STS2_GYM_DEV_PLAN.md).
+Status: **P0 ~complete** (combat + all non-combat phases + full-run loop + save / restore + LLM baseline).
+[See `STS2_GYM_DEV_PLAN.md §12`](../STS2_GYM_DEV_PLAN.md#12-实施进度事后追加2026-05) for current progress.
 
 ---
 
-## Prerequisites (developer machine)
+## 30-second TL;DR
 
-- **.NET SDK ≥ 9.0** (`dotnet --version`). Tested with 10.0.x targeting net9.0.
-- **macOS Apple Silicon** for current iteration (Linux / Windows / macOS x86_64 P1 milestone).
-- **STS2 installed via Steam**. Default install path is detected by the build:
-  ```
-  ~/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/
-  ```
-- Decompiled `sts2.dll` + `0Harmony.dll` at `../sts2-reverse/` (these match the installed game DLL by md5).
+```bash
+# 1. Build + deploy the mod
+cd /path/to/STS2env/sts2-gym
+bash scripts/smoke_test.sh --no-game
+
+# 2. Enable mod loading once (writes settings.save), then launch STS2 manually
+python -m sts2_gym.install --enable-mods
+open -a "Slay the Spire 2"   # macOS; or just launch via Steam
+
+# 3. From the main menu, click "New Run" -> pick character -> enter act 1
+#    (you can also do this programmatically — see "Start a fresh run" below)
+
+# 4. Run the random agent against the live game
+cd py
+python -m sts2_gym.doctor                            # 6-item self-check
+python -m sts2_gym.full_run_agent --verbose          # plays a full run
+```
 
 ---
 
-## Building the mod
+## Prerequisites
 
-```bash
-cd sts2-gym/mod
-dotnet build -c Release
-```
-
-Produces `sts2-gym/mod/bin/Release/sts2gym.dll`.
-
-The `<Reference>` items in `Sts2Gym.csproj` point at `../sts2-reverse/sts2.dll` and `../sts2-reverse/0Harmony.dll` with `<Private>false</Private>` — the build does **not** copy these into the output, because the game ships its own copies at runtime.
-
----
-
-## Deploying the mod
-
-### Recommended: one-shot smoke test script
-
-```bash
-./sts2-gym/scripts/smoke_test.sh
-```
-
-This script builds, deploys, waits for you to launch the game, then tails the log filtered to `[sts2gym]` and mod-loader lines. Override the STS2 install path via env var:
-
-```bash
-STS2_INSTALL=/custom/path ./sts2-gym/scripts/smoke_test.sh
-```
-
-### Manual fallback (macOS arm64)
-
-```bash
-STS2="$HOME/Library/Application Support/Steam/steamapps/common/Slay the Spire 2"
-# IMPORTANT: on macOS the mod dir must be INSIDE the .app bundle, next to the
-# game binary. Godot's OS.GetExecutablePath() returns Contents/MacOS/<binary>,
-# and ModManager.Initialize scans <dirname-of-executable>/mods/.
-MOD_DIR="$STS2/SlayTheSpire2.app/Contents/MacOS/mods/sts2gym"
-mkdir -p "$MOD_DIR"
-cp sts2-gym/mod/sts2gym.json "$MOD_DIR/"
-cp sts2-gym/mod/bin/Release/sts2gym.dll "$MOD_DIR/"
-```
-
-The manifest file name is flexible (any `*.json` in the mod dir is parsed), but the DLL filename **must** be `<manifest.id>.dll` — i.e. `sts2gym.dll`.
-
-### macOS path caveats
-
-- **The mod must live inside the signed .app bundle** (`Contents/MacOS/mods/`), not at the install root. Putting it at `<install>/mods/` silently fails — `ModManager` doesn't even log "no mods found", it just leaves `_mods.Count == 0` and returns early.
-- **Steam may re-validate / re-download the .app bundle on update**, which would wipe `Contents/MacOS/mods/`. If you find your mod missing after a game update, just re-run `smoke_test.sh`.
-- **macOS Gatekeeper / code signing**: putting files inside a signed bundle does not always invalidate the signature for ad-hoc launches via Steam, but if you ever see "app is damaged and can't be opened" after deploying, the workaround is `xattr -dr com.apple.quarantine "$STS2/SlayTheSpire2.app"`.
-
-### STS2 log location (macOS)
-
-```
-~/Library/Application Support/SlayTheSpire2/logs/godot.log         # current
-~/Library/Application Support/SlayTheSpire2/logs/godot<UTC-stamp>.log  # historical
-```
-
-The current run writes to `godot.log` (overwritten each launch) and also rotates a timestamped copy. `smoke_test.sh` tails whichever was most recently modified.
-
-### First-launch checklist
-
-The fresh-install flow takes **two game launches** because the UX gate is gated by save state:
-
-**Launch 1 (consent + initialize ModSettings)**:
-1. Launch STS2 via Steam or Spotlight.
-2. On the main menu, a popup auto-appears asking to load mods. (Triggered by [`NMainMenu._Ready`](../sts2-reverse/decompiled_dll/MegaCrit.Sts2.Core.Nodes.Screens.MainMenu/NMainMenu.cs) when `SettingsSave.ModSettings == null && ModManager.Mods.Count > 0`.)
-3. Click "Yes / Load Mods". This creates `ModSettings`, sets `PlayerAgreedToModLoading = true`, and saves settings.
-4. Quit STS2. (The mod is still `Disabled` for this run because `TryLoadMod` ran way before you got to the main menu and the consent didn't exist yet.)
-
-**Launch 2 (mod actually loads)**:
-5. Re-launch STS2. This time `ModManager.Initialize` reads `PlayerAgreedToModLoading = true` and proceeds to actually load the DLL.
-6. Look at the log file for:
-   - `Loading assembly DLL .../mods/sts2gym/sts2gym.dll` — DLL discovered
-   - `Calling initializer method of type Sts2Gym.Sts2GymMod for sts2gym, Version=...` — `[ModInitializer]` invoked
-   - `Finished mod initialization for 'STS2-Gym Bridge' (sts2gym).` — official loader done
-   - ` --- RUNNING MODDED! --- Loaded 1 mods (1 total)` — loader summary
-   - `[sts2gym] hello — ModInitializer.Init invoked` — our entry point fired
-   - `[sts2gym] subscriptions: RunStarted, CombatSetUp, TurnStarted, TurnEnded`
-7. Start a new run → expect `[sts2gym] RunStarted #1: ascension=... players=... seed='...'`.
-8. Enter combat → expect `[sts2gym] CombatSetUp #1: encounter=...` and `[sts2gym] TurnStarted #1: ...`.
-
-If on Launch 1 the popup **doesn't** appear, the mod was not detected. Verify with:
-```bash
-ls "$HOME/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/SlayTheSpire2.app/Contents/MacOS/mods/sts2gym/"
-# Expect: sts2gym.dll  sts2gym.json
-```
-
-### Log file location (macOS)
-
-Godot writes logs under user data. Typical macOS path:
-
-```
-~/Library/Application Support/Godot/app_userdata/Slay the Spire 2/logs/
-```
-
-Tail the latest log:
-```bash
-tail -F "$HOME/Library/Application Support/Godot/app_userdata/Slay the Spire 2/logs/godot.log"
-```
-
-(Exact filename may vary; `grep` for the `[sts2gym]` tag.)
-
----
-
-## What this hello-world verifies
-
-The minimal P0 smoke test verifies:
-
-| Verification | Mechanism |
+| | Required |
 |---|---|
-| Manifest parsing | `Loaded 1 mods` line appears |
-| DLL loading | `[sts2gym] hello — ModInitializer.Init invoked` line appears |
-| `[ModInitializer(...)]` attribute discovery | same as above |
-| Event subscription timing | `[sts2gym] RunStarted` appears when starting a new run |
-| `RunManager.Instance.ToSave()` reuse (dev plan §2.1 path a) | `[sts2gym] SerializableRun snapshot OK: ...` line includes `schema=...`, `rng_streams=...` etc. |
-| `CombatManager.Instance` events | `[sts2gym] CombatSetUp / TurnStarted / TurnEnded` lines appear in combat |
-| `FastModeType.Instant` opt-in (dev plan §2.4) | `[sts2gym] FastMode: Normal -> Instant` line appears at run start, animations visibly fast |
+| STS2 install | Steam (any platform; macOS arm64 currently tested) |
+| .NET SDK | ≥ 9.0 (`dotnet --version`) |
+| Python | ≥ 3.10 (uses `match`/`type` syntax) |
+| Dependencies | stdlib only for the core (`urllib` HTTP). `gymnasium` if you want to use `STS2CombatEnv`. `anthropic` if you want the Claude baseline |
 
-If any of these miss, the mod-loading pipeline has a problem and we cannot proceed to ScenarioInjector / ActionDispatcher.
+The project depends on a local copy of `sts2.dll` + `0Harmony.dll` (located at
+`../sts2-reverse/`). These are **not** redistributed — they're loaded from your
+legally-owned STS2 install. See [LEGAL.md](LEGAL.md) and the gitignore.
 
 ---
 
-## Next steps (per dev plan)
+## Install
 
-Day 2:
-- Deploy to game, verify all checklist items above
-- Compare `CombatHistory.Entries` event sequence across `FastMode = Normal / Fast / Instant` for bit-exactness
-- If Instant breaks bit-exactness, fall back to Fast and document the corner case
+```bash
+# from STS2env/ root
+cd sts2-gym
+bash scripts/smoke_test.sh --no-game     # builds + deploys the C# mod
 
-Day 3 and beyond: HTTP `/observe` endpoint, phase resolver, mid-combat `SerializableCombatState`. See [`../sts2-reverse/docs/recon/SUMMARY.md`](../sts2-reverse/docs/recon/SUMMARY.md) §4 for the 7-day plan.
+cd py
+pip install -e .                          # installs sts2_gym Python package
+python -m sts2_gym.install --enable-mods  # patches settings.save (PlayerAgreedToModLoading=true)
+python -m sts2_gym.doctor                 # verify everything wires up
+```
+
+`sts2_gym.install` writes `mods_enabled = true` into Slay the Spire 2's
+`settings.save` so the game loads mods on the next launch without you having to
+click through the in-game consent popup ([dev plan §3.2 P0](../STS2_GYM_DEV_PLAN.md#32-进程管理器-gameprocess)).
+
+If you'd rather give consent manually: launch STS2 once, click "Load Mods" on
+the main menu popup, quit, then re-launch.
+
+---
+
+## Quickstart: first episode
+
+### Option A — drive the whole run from Python
+
+```bash
+# Make sure STS2 is running and on the main menu.
+cd sts2-gym/py
+python -m sts2_gym.full_run_agent \
+    --character IRONCLAD \
+    --ascension 0 \
+    --seed MYSEED \
+    --verbose
+```
+
+`full_run_agent` starts a fresh run via the mod, then drives every phase
+(map / event / reward / shop / rest / combat / card-select / relic-select /
+bundle-select / game-over) until the run ends.
+
+### Option B — `gym.Env` style (combat scope)
+
+```python
+import gymnasium as gym
+from sts2_gym import STS2CombatEnv
+
+env = STS2CombatEnv(
+    character="IRONCLAD",         # start a fresh run on first reset
+    ascension=0,
+    run_seed="MYSEED",
+    encounter="CHOMPERS_NORMAL",  # optional — jump to a specific encounter
+    partial_obs=False,            # True hides RNG state + draw pile order
+    reward_mode="sparse",         # or "shaped" (HP-delta shaping per step)
+)
+obs, info = env.reset()
+print(info["text_obs"])           # LLM-readable view of the same state
+print(info["action_mask"])        # numpy bool array of length env.action_space.n
+
+import numpy as np
+for _ in range(200):
+    legal = np.flatnonzero(info["action_mask"])
+    action = int(np.random.choice(legal))
+    obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated:
+        break
+env.close()
+```
+
+You can also access the text / JSON views without going through the env:
+
+```python
+from sts2_gym import ModBridgeClient, render_text, render_json
+c = ModBridgeClient()
+obs = c.observe()
+print(render_text(obs))     # prose view, BBCode stripped
+import json; print(json.dumps(render_json(obs), indent=2))
+```
+
+### Option C — LLM baseline
+
+```bash
+export ANTHROPIC_API_KEY=...
+cd sts2-gym/py
+python -m sts2_gym.examples.claude_baseline --model claude-haiku-4-5
+```
+
+~150 lines of code wrapping `LLMActionParser` and the text / JSON observation
+views. Replace `claude_baseline.py` with your own loop to evaluate other LLMs.
+
+---
+
+## HTTP API (Mod endpoints)
+
+The mod listens on `127.0.0.1:7777` by default (configurable via env var).
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/health` | GET | Liveness probe |
+| `/version` | GET | Protocol + mod version |
+| `/observe` | GET (`?partial=1` for PartialObs view) | Full state snapshot — phase, combat state, run state, action_mask source-of-truth |
+| `/action_mask` | GET | Legal action set for the current phase |
+| `/step` | POST | Apply a structured action. Body: `{"type": "play_card", "card_idx": 0, "target_combat_id": 1}` etc. |
+| `/reset` | POST | Reset to a Combat-level scenario (P0 ScenarioInjector) |
+| `/start_run` | POST | Begin a fresh run: `{"character": "IRONCLAD", "ascension": 0, "seed": "..."}` |
+| `/save_run` | GET | Snapshot the current run as a SerializableRun JSON (between-rooms only) |
+| `/restore_run` | POST | Reload a previously saved run: `{"save": {...SerializableRun JSON...}}` |
+| `/selector/enable` | POST | Push our ICardSelector to drive non-combat picks. Required before agent sessions |
+| `/selector/disable` | POST | Pop our ICardSelector. Restore manual play |
+| `/registry` | GET | Stable card / monster / relic id → int mapping (for tensor encoding) |
+
+Use `curl http://127.0.0.1:7777/observe | python3 -m json.tool` to inspect live state.
+
+---
+
+## Action space
+
+The unified action space has 13 structured action types covering all 12 phases.
+Same actions are reachable from three forms (see `sts2_gym.action_codec`):
+
+```
+Discrete int  ◄──►  Structured dict  ◄──►  Canonical text
+       │                    │                       │
+       └────────────┬───────┴───────┬───────────────┘
+                    ▼               ▼
+                  RL agent       LLM agent
+```
+
+Structured forms (subset — full list in `action_codec.py`):
+
+```python
+# Combat
+{"type": "play_card", "card_idx": 2, "target_combat_id": 5}
+{"type": "end_turn"}
+
+# ICardSelector (post-combat card pick, in-combat select-to-discard, etc.)
+{"type": "select_pick", "option_idx": 0}
+{"type": "select_confirm"}
+{"type": "select_skip"}
+
+# Non-combat phases
+{"type": "choose_map_node", "col": 2, "row": 3}
+{"type": "choose_event_option", "option_idx": 1}
+{"type": "take_reward_item", "idx": 0}      # claim a reward
+{"type": "leave_reward_screen"}              # done with rewards
+{"type": "card_reward_pick", "idx": 0}      # post-combat card choice
+{"type": "relic_pick", "idx": 0}            # relic-select screen
+{"type": "bundle_pick", "idx": 1}           # bundle-select screen
+{"type": "shop_buy", "entry_idx": 0}
+{"type": "shop_leave"}
+{"type": "rest_choose", "option_idx": 0}    # REST / SMITH / DIG / MEND / etc.
+{"type": "rest_leave"}                       # done at rest site
+{"type": "proceed_after_game_over"}
+```
+
+Canonical text examples (consumable by `LLMActionParser`):
+
+```
+play Strike on B
+end turn
+pick map A2
+choose option 0
+buy card 0
+rest
+smith
+upgrade Strike, Defend
+```
+
+---
+
+## Observation views
+
+`STS2CombatEnv.reset()` / `step()` returns the **tensor view** in `obs` and the
+**text view** in `info["text_obs"]`. Both come from the same `/observe` snapshot
+so wrappers can A/B compare without re-querying the game.
+
+To get JSON / text without going through `STS2CombatEnv`:
+
+```python
+from sts2_gym import render_text, render_json, ModBridgeClient
+c = ModBridgeClient()
+state = c.observe()
+text = render_text(state)         # human-readable prose, BBCode stripped
+json_view = render_json(state)    # structured JSON for tool-use prompts
+```
+
+`partial_obs=True` (env constructor) or `client.observe(partial=True)` masks
+RNG counters and the `RelicGrabBag` contents — i.e. fields a human player
+can't normally see ([dev plan §2.8](../STS2_GYM_DEV_PLAN.md#28-人类可读状态渲染器-humanrendererllm-接口的核心组件)).
+
+---
+
+## Save / restore
+
+`/save_run` + `/restore_run` snapshot the **between-rooms** state (full
+`SerializableRun`: deck, HP, gold, potions, relics, RNG state, map, modifiers,
+visited rooms). Mid-combat state is **not** captured (the game itself only saves
+between rooms — multiplayer sync relies on deterministic replay, not state
+checkpoints).
+
+```python
+from sts2_gym import ModBridgeClient
+c = ModBridgeClient()
+snap = c.save_run()             # 409 if currently mid-combat
+# ... do stuff that mutates state ...
+c.restore_run(snap["save"])     # reload — current run is CleanUp'd first
+```
+
+The smoke test `python -m sts2_gym.save_restore_test` round-trips a save and
+asserts HP / gold / deck / ascension / act are bit-equal before and after.
+
+---
+
+## Throughput
+
+| FastMode | Animation behaviour | Approx step/s |
+|---|---|---|
+| `Normal` | Full game animations | ~3-5 |
+| `Fast` | 2× speedup | ~8-15 |
+| `Instant` | All visual delays short-circuited | ≥ 50 (target) |
+
+The mod sets `FastMode = Instant` at run start. A vanilla bug in
+`NCreature.AnimDie` would NRE on the first enemy death under Instant; Day-13's
+Harmony patch (`mod/Patches/NCreatureAnimDiePatch.cs`) routes around it.
+
+---
+
+## Determinism
+
+Pass a `seed` string to `/start_run` (or `STS2CombatEnv(run_seed=...)`) to get
+deterministic trajectories. The seed is propagated into `RunRngSet`'s 12 RNG
+streams + each player's `PlayerRngSet` 3 streams (see [dev plan §2.5](../STS2_GYM_DEV_PLAN.md#25-rng-控制器-rngcontroller)).
+
+`python -m sts2_gym.determinism_test` is a small repro check: it plays the same
+seed twice and asserts the trajectories match.
+
+---
+
+## Debugging
+
+Quick reference (full playbook at [`../IMPLEMENTATION_NOTES.md §5`](../IMPLEMENTATION_NOTES.md#5-调试-playbook)):
+
+```bash
+# 1. live state — what phase + how stale
+curl -s http://127.0.0.1:7777/observe | python3 -m json.tool | head -40
+
+# 2. mod log (macOS path)
+grep -E "sts2gym" ~/Library/Application\ Support/SlayTheSpire2/logs/godot.log | tail -30
+
+# 3. if HTTP hangs entirely (single-threaded listener died), force-kill
+pkill -9 -f SlayTheSpire2
+
+# 4. manual unstick if a selector is stuck
+sts2-gym/scripts/unstick.sh status
+```
+
+---
+
+## Architecture
+
+- **Mod** ([`mod/`](mod/)) — C# class library, `[ModInitializer]` entry, runs inside the game process. HTTP listener single-threaded; all game-thread work marshalled via `GameThread.RunOnMainAsync`.
+- **Python** ([`py/sts2_gym/`](py/sts2_gym/)) — `ModBridgeClient` (stdlib `urllib`), `STS2CombatEnv` (`gym.Env`), `HumanRenderer` (text + JSON), `LLMActionParser`, full-run dispatch loop.
+- **Reverse-engineering reference** (`../sts2-reverse/`) — decompiled DLL is `.gitignore`-d, used only for reading game internals during development.
+
+Detailed architecture + design decisions: [`../IMPLEMENTATION_NOTES.md`](../IMPLEMENTATION_NOTES.md).
+
+---
+
+## Caveats
+
+- **Single process = single env.** STS2's `RunManager.Instance` is a singleton, so VectorEnv requires N OS processes. See [dev plan §2.7](../STS2_GYM_DEV_PLAN.md#27-实例生命周期).
+- **macOS path.** Mod must live at `<install>/SlayTheSpire2.app/Contents/MacOS/mods/sts2gym/`. The deploy script handles this.
+- **Game updates.** STS2 is in EA; new patches may break action / model IDs. `/registry` includes `content_hash` to detect drift.
+- **`decompiled_dll/` is local-only**, not pushed to any public repo (per legal redlines in [CLAUDE.md](../CLAUDE.md)).
