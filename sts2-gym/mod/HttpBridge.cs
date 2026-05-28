@@ -727,27 +727,6 @@ internal static class HttpBridge
                     break;
                 }
                 (status, body) = HandleStep(ctx).GetAwaiter().GetResult();
-                // Day-14.10: opt-in `?with_obs=1` inlines the post-step
-                // observation (already refreshed inside HandleStep) into the
-                // response. Saves the agent an /observe round-trip. Default
-                // off for back-compat — older clients still see the original
-                // step body shape.
-                if (status == 200)
-                {
-                    var stepWithObs = ctx.Request.QueryString["with_obs"];
-                    if (stepWithObs == "1" || stepWithObs == "true")
-                    {
-                        var stepPartial = ctx.Request.QueryString["partial"];
-                        bool pp = stepPartial == "1" || stepPartial == "true";
-                        var cachedObs = pp ? _cachedPartialObsWithMask : _cachedFullObsWithMask;
-                        // Splice ,"obs":<cachedObs> in just before the final '}'.
-                        if (!string.IsNullOrEmpty(body) && body[body.Length - 1] == '}')
-                        {
-                            body = body.Substring(0, body.Length - 1)
-                                   + ",\"obs\":" + WithFreshAge(cachedObs) + "}";
-                        }
-                    }
-                }
                 break;
 
             case "/reset":

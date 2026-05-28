@@ -110,33 +110,14 @@ def run_one_full_run(
     t0 = time.monotonic()
     phase_seconds: dict[str, float] = {}
     last_step_t = t0
-    # Day-14.10: when the previous /step returned the post-step obs inline
-    # under "obs" (with_obs=True), use that instead of issuing a fresh /observe.
-    # Saves one HTTP round-trip per iteration in the tight combat loop.
-    pending_obs: dict[str, Any] | None = None
-
-    # Wrap c.step so any 'obs' field in the response is picked up into pending_obs
-    # without touching every _do_* handler. Closure variable lives in this loop.
-    _real_step = c.step
-    def _step_with_inline(action: dict[str, Any], timeout: float = 30.0, **kw: Any) -> dict[str, Any]:
-        nonlocal pending_obs
-        resp = _real_step(action, timeout=timeout, with_obs=True, **{k: v for k, v in kw.items() if k != "with_obs"})
-        if isinstance(resp, dict) and isinstance(resp.get("obs"), dict):
-            pending_obs = resp["obs"]
-        return resp
-    c.step = _step_with_inline  # type: ignore[method-assign]
 
     while steps < max_steps:
         steps += 1
         try:
-            if pending_obs is not None:
-                obs = pending_obs
-                pending_obs = None
-            else:
-                # Day-14 speed-tune: ask for action_mask inline so combat/selector
-                # steps can read obs["action_mask"] instead of issuing a second HTTP
-                # call per loop iteration.
-                obs = c.observe(with_mask=True)
+            # Day-14 speed-tune: ask for action_mask inline so combat/selector
+            # steps can read obs["action_mask"] instead of issuing a second HTTP
+            # call per loop iteration.
+            obs = c.observe(with_mask=True)
         except Exception as e:
             print(f"[full-run] ✗ /observe failed: {e}")
             summary["stopped"] = f"observe failed: {e!r}"
