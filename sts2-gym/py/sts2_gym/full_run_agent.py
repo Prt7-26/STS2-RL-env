@@ -108,6 +108,8 @@ def run_one_full_run(
     last_progress_marker: tuple | None = None
     stuck_marker_count = 0
     t0 = time.monotonic()
+    phase_seconds: dict[str, float] = {}
+    last_step_t = t0
 
     while steps < max_steps:
         steps += 1
@@ -127,6 +129,15 @@ def run_one_full_run(
 
         # Track phase transitions for the summary.
         summary["steps_per_phase"][effective] = summary["steps_per_phase"].get(effective, 0) + 1
+        # Day-14.6: accumulate wall-clock per phase. dt covers everything from
+        # the previous step's end to this iteration's /observe — captures both
+        # mod-side latency (for the prior /step) and animations / waits in
+        # between.
+        now = time.monotonic()
+        dt = now - last_step_t
+        if last_phase is not None:
+            phase_seconds[last_phase] = phase_seconds.get(last_phase, 0.0) + dt
+        last_step_t = now
         if effective != last_phase:
             summary["phases_visited"].append(effective)
             last_phase = effective
@@ -203,6 +214,9 @@ def run_one_full_run(
 
     summary["total_steps"] = steps
     summary["elapsed_s"] = round(time.monotonic() - t0, 2)
+    # Day-14.6: report wall-clock seconds spent in each phase so we can spot
+    # which transitions / phases are eating the budget.
+    summary["seconds_per_phase"] = {k: round(v, 2) for k, v in phase_seconds.items()}
     return summary
 
 
