@@ -943,6 +943,63 @@ P2 milestone 出**两类 offline dataset**：
 
 ---
 
-## 12. 一句话核心
+## 12. 实施进度（事后追加，2026-05）
+
+侦察 + 开发已经走完 36 个 commit，从 Day-1 hello-world mod 到 Day-10.O 完整 phase 覆盖。
+
+### 12.1 §11 P0 完成度：10.5/11
+
+| 优先级 | 里程碑 | 状态 | 备注 |
+|---|---|---|---|
+| P0 | `PlayerAgreedToModLoading` 绕过 + `sts2_gym.doctor` | ✅ | Day-12: `python -m sts2_gym.install --enable-mods` + 6 项自检 |
+| P0 | Mod HTTP server + /observe | ✅ | Day-3 |
+| P0 | obs_encoder（tensor 版） | ✅ | Day-7 + Day-9.3 (card_id 列) |
+| P0 | HumanRenderer（text + json 两套） | ✅ | Day-7 text + Day-11.A json |
+| P0 | ActionDispatcher + ICardSelector + 5 个 mod-自引入 selector | ✅ | Day-8 (ICardSelector) + Day-10.A–O 覆盖**全部 11 个 phase**——map/event/reward/card_reward_select/relic_select/bundle_select/shop/rest/game_over，比原计划 5 个 selector 多了 6 个 |
+| P0 | action_codec 三向 + LLMActionParser | ✅ | Day-11.A (codec) + Day-11.B (parser) |
+| P0 | Combat-level ScenarioInjector | ✅ | Day-6 Level-A + Day-9.2 Level-B（`NGame.StartNewSingleplayerRun` 直调）|
+| P0 | RngController（轻量版） | ✅ | Day-6 determinism test 通过 |
+| P0 | Gymnasium Env 类 + action mask | ✅ | Day-7 + Day-8 selector slots |
+| P0 | LLM baseline 示例 | ✅ | Day-11.B `examples/claude_baseline.py` ~150 行 |
+| P0 | 文档 + Schema 生成 | ⚠️ | CLAUDE.md / CODING_AGENT_BRIEF.md / IMPLEMENTATION_NOTES.md 已建。**Schema 生成 + 外部 quickstart README 待做** |
+
+### 12.2 §11 P1 / P2 状态
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| P1 FastMode.Instant fix | ❌ | 已知 `NCreature.AnimDie` 内 `Node.MoveChild(null)` NRE，要 Harmony patch。**训练速度瓶颈**——现在 0.7-1.2 step/s |
+| P1 VectorEnv 验证 | ❌ | STS2 process singleton 约束，需要 Docker 或多机分布。1 周+ |
+| P1 Floor-level + Run-level injector | ✅ | Day-9.2 `start_run` + Day-10.A `choose_map_node` 已覆盖整 run 走通 |
+| P1 Save/Restore 端点 | ⚠️ | `/reset` 能恢复 player+rng snapshot（Day-6），但没有 task-style `/save_run` + `/restore_run` |
+| P1 Ascension 缩放正确性 test | ❌ | 半天工作量 |
+| P2 系列 | ❌ | Docker / 多语言 / Offline 数据集——按 P0/P1 收尾后再说 |
+
+### 12.3 实施中沉淀的关键 insight（详见 [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md)）
+
+1. **短 await + agent 接力 sub-screen** 是核心架构模式。`/step` 持 `_stepLock`、HTTP listener 单线程，任何 backend call 触发 selector 且我们 await 到完成 → 完整死锁。统一用 1.5s WaitAsync + 早返回，让 agent 通过 `selector_active=true` 接力。**踩过 4 次坑：Day-7 PlayCardAsync、Day-10.E ChooseEventOption、Day-10.L RestChoose+ShopBuy**
+
+2. **Cache 刷新事件清单是 9 个**（原计划只考虑了 5 个）。`NOverlayStack.Changed` 是 lazy 订阅（NRun._Ready 之后才有）。`OnCombatEnded` 必须 schedule delayed refresh 700ms（NRewardsScreen push 在 event 之后一两帧）。**Day-10.H+J 修这俩**
+
+3. **UI button click 优于直接 backend call** 在 5 个 phase：rest / reward leave / game over / card reward sub-screen / bundle pick。直接调底层会跳过按钮 click handler 里的副作用（DisableOptions、AfterSelectingOption、ProceedFromTerminalRewardsScreen）。**经验法则**：先看 AutoSlay 的对应 Handler 怎么做
+
+4. **Phase 命名冲突陷阱**：`NRewardsScreen` 和 `NCardRewardSelectionScreen` 都是 "reward" 类型，但其实是父子关系且需独立 dispatch。`NChooseABundleSelectionScreen` 不走 ICardSelector。Day-10.G / Day-10.O 修过
+
+5. **`BecameEmpty()` Task edge 不可靠**：队列瞬间空时返已 complete Task，不是真等到下次空。`PlayerCmd.EndTurn` 异步入队 → 立刻调 `BecameEmpty()` 会立刻 ready。EndTurnAsync 改用 poll `IsPlayPhase` 翻转（Day-7.1）
+
+6. **官方 public API 优于 UI 驱动**：`NGame.Instance.StartNewSingleplayerRun` 单调用搞定整个 run 启动序列（含 `LoadRunAssets` / `LoadActAssets` / `Launch` / `SetCurrentScene` / `EnterAct`）。**比 AutoSlay 模拟主菜单点击快几个数量级**
+
+### 12.4 剩余工作排序
+
+按 unblock 力度：
+
+1. **FastMode.Instant fix** — 当前最大瓶颈。0.7 step/s 让 RL 训练实际上做不了
+2. **Quickstart README** — 让外部用户能跑起来
+3. **Save/Restore endpoints** — MCTS / branching 解锁
+4. **Ascension scaling test** — 论文严谨性
+5. **VectorEnv** — 训练吞吐量（前 4 个解了再说）
+
+---
+
+## 13. 一句话核心
 
 **这套环境的价值不取决于代码量，取决于：研究者能不能在 30 分钟内跑起来、能不能在论文里干净地引用它、能不能信任它的正确性、以及 RL agent 和 LLM agent 能不能在同一套接口上直接比较分数。所有开发决策按这四条加权。**
