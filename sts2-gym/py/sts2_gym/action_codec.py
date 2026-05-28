@@ -93,6 +93,16 @@ def to_text(action: dict[str, Any], context: dict[str, Any] | None = None) -> st
         return "shop leave"
     if t == "rest_choose":
         return f"rest {action.get('option_idx', '?')}"
+    if t == "rest_leave":
+        return "rest leave"
+    if t == "card_reward_pick":
+        return f"card reward pick {action.get('idx', '?')}"
+    if t == "relic_pick":
+        return f"relic pick {action.get('idx', '?')}"
+    if t == "bundle_pick":
+        return f"bundle pick {action.get('idx', '?')}"
+    if t == "noop":
+        return "noop"
     return f"<{t} {action}>"
 
 
@@ -157,8 +167,16 @@ _register(r"proceed", lambda m: {"type": "proceed_after_game_over"})
 _register(r"shop\s+buy\s+(?P<i>\d+)",
           lambda m: {"type": "shop_buy", "entry_idx": int(m["i"])})
 _register(r"shop\s+leave", lambda m: {"type": "shop_leave"})
+_register(r"rest\s+leave", lambda m: {"type": "rest_leave"})
 _register(r"rest\s+(?P<i>\d+)",
           lambda m: {"type": "rest_choose", "option_idx": int(m["i"])})
+_register(r"card\s+reward\s+pick\s+(?P<i>\d+)",
+          lambda m: {"type": "card_reward_pick", "idx": int(m["i"])})
+_register(r"relic\s+pick\s+(?P<i>\d+)",
+          lambda m: {"type": "relic_pick", "idx": int(m["i"])})
+_register(r"bundle\s+pick\s+(?P<i>\d+)",
+          lambda m: {"type": "bundle_pick", "idx": int(m["i"])})
+_register(r"noop", lambda m: {"type": "noop"})
 
 
 def from_text(text: str, context: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -658,6 +658,110 @@ def test_llm_parser_failure():
     print("  ✓ rejects empty / off-topic / pure-punct")
 
 
+# ============================ Day-14 schemas ============================
+
+
+def _read_steprunner_action_types() -> set[str]:
+    """Parse mod/StepRunner.cs and pull out every action name from the
+    dispatch switch (the canonical set the server accepts on /step).
+
+    Returns the set of literal strings on the LHS of `"foo" =>` patterns within
+    the StepRunner.DispatchAsync switch. Cheap to maintain because the switch
+    is small and stable.
+    """
+    import re
+    from pathlib import Path
+    p = Path(__file__).resolve().parent.parent.parent / "mod" / "StepRunner.cs"
+    text = p.read_text(encoding="utf-8")
+    # The dispatch switch lives between "return type switch" and its closing "};"
+    m = re.search(r"return type switch\s*\{(.+?)\};", text, re.DOTALL)
+    if not m:
+        raise AssertionError("could not locate the type-switch in StepRunner.cs")
+    block = m.group(1)
+    found = set(re.findall(r'"([a-z_]+)"\s*=>', block))
+    if not found:
+        raise AssertionError(f"no action names found in StepRunner.cs switch block")
+    return found
+
+
+def test_schemas_action_types_match_steprunner():
+    print("[test] schemas: ACTION_TYPE_SCHEMAS matches StepRunner.cs dispatch")
+    from sts2_gym.schemas import ACTION_TYPE_SCHEMAS
+    schemas_set = set(ACTION_TYPE_SCHEMAS.keys())
+    server_set = _read_steprunner_action_types()
+    missing_in_schema = server_set - schemas_set
+    extra_in_schema = schemas_set - server_set
+    assert not missing_in_schema, (
+        f"action types accepted by /step but missing from schemas.py: {missing_in_schema}\n"
+        "  -> add them to ACTION_TYPE_SCHEMAS so the JSON Schema and docs stay accurate"
+    )
+    assert not extra_in_schema, (
+        f"action types in schemas.py that /step would reject: {extra_in_schema}\n"
+        "  -> remove from ACTION_TYPE_SCHEMAS or add the matching mod-side handler"
+    )
+    print(f"  ✓ {len(schemas_set)} action types align across mod + Python")
+
+
+def test_schemas_codec_coverage():
+    print("[test] schemas: action_codec.to_text handles every schema'd type")
+    from sts2_gym.schemas import ACTION_TYPE_SCHEMAS
+    from sts2_gym.action_codec import to_text
+    minimal_args = {
+        "play_card": {"card_idx": 0},
+        "end_turn": {},
+        "select_pick": {"option_idx": 0},
+        "select_unpick": {"option_idx": 0},
+        "select_confirm": {},
+        "select_skip": {},
+        "choose_map_node": {"col": 0, "row": 0},
+        "choose_event_option": {"option_idx": 0},
+        "take_reward_item": {"idx": 0},
+        "leave_reward_screen": {},
+        "card_reward_pick": {"idx": 0},
+        "relic_pick": {"idx": 0},
+        "bundle_pick": {"idx": 0},
+        "shop_buy": {"entry_idx": 0},
+        "shop_leave": {},
+        "rest_choose": {"option_idx": 0},
+        "rest_leave": {},
+        "proceed_after_game_over": {},
+        "noop": {},
+    }
+    for type_name in ACTION_TYPE_SCHEMAS:
+        action = {"type": type_name, **minimal_args[type_name]}
+        text = to_text(action)
+        assert text and not text.startswith("<"), (
+            f"action_codec.to_text returned a fallback ('{text}') for {type_name!r}; "
+            "extend to_text to emit a canonical form for every schema'd action"
+        )
+    print(f"  ✓ to_text covers all {len(ACTION_TYPE_SCHEMAS)} action types")
+
+
+def test_schemas_files_in_sync():
+    print("[test] schemas: docs/schemas/*.json match source-of-truth")
+    import json
+    from pathlib import Path
+    from sts2_gym.schemas import ALL_SCHEMAS
+    schemas_dir = Path(__file__).resolve().parent.parent.parent / "docs" / "schemas"
+    if not schemas_dir.exists():
+        print("  ⚠ docs/schemas/ doesn't exist yet — run `python -m sts2_gym.gen_schemas`")
+        return
+    drift: list[str] = []
+    for name, schema in ALL_SCHEMAS.items():
+        path = schemas_dir / f"{name}.schema.json"
+        if not path.exists():
+            drift.append(f"missing {path.name}")
+            continue
+        on_disk = json.loads(path.read_text(encoding="utf-8"))
+        if on_disk != schema:
+            drift.append(f"out-of-date {path.name}")
+    assert not drift, (
+        f"schemas drift detected: {drift}\n"
+        "  -> run `python -m sts2_gym.gen_schemas`"
+    )
+    print(f"  ✓ {len(ALL_SCHEMAS)} schema files match source-of-truth")
+
+
 def main():
     tests = [
         test_encode_observation,
@@ -689,6 +793,10 @@ def main():
         test_llm_parser_tool_use_json,
         test_llm_parser_ambiguity_resolution,
         test_llm_parser_failure,
+        # Day-14 schema drift checks
+        test_schemas_action_types_match_steprunner,
+        test_schemas_codec_coverage,
+        test_schemas_files_in_sync,
     ]
     for t in tests:
         t()

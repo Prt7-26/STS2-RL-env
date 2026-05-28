@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sts2-gym.local/schemas/action.schema.json",
+  "title": "STS2-Gym Action",
+  "description": "Structured-dict form of an STS2-Gym action, as accepted by POST /step.\nRound-trips to canonical text (via sts2_gym.action_codec.to_text/from_text) and to Discrete action ids (via sts2_gym.env.decode_action / build_action_mask).\nSee dev plan §3.4.",
+  "type": "object",
+  "oneOf": [
+    {
+      "type": "object",
+      "description": "Play a card from the player's hand. Combat phase only.",
+      "properties": {
+        "type": {
+          "const": "play_card"
+        },
+        "card_idx": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index into combat.players[0].hand"
+        },
+        "target_combat_id": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional. Required for single-target cards; ignored for AoE / self-target. Match against combat.creatures[*].combat_id."
+        },
+        "card_id": {
+          "type": "string",
+          "description": "Advisory; ignored by the mod. Use for client-side logging only."
+        },
+        "cost": {
+          "type": "integer",
+          "description": "Advisory; ignored by the mod."
+        }
+      },
+      "required": [
+        "type",
+        "card_idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "End the player's turn. Combat phase only.",
+      "properties": {
+        "type": {
+          "const": "end_turn"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Pick option_idx in an ICardSelector-driven sub-screen (card reward, deck upgrade, select-to-discard, etc.).",
+      "properties": {
+        "type": {
+          "const": "select_pick"
+        },
+        "option_idx": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index into selector.options"
+        }
+      },
+      "required": [
+        "type",
+        "option_idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Remove a previously-picked option from the selector accumulator. Only valid mid-multi-select.",
+      "properties": {
+        "type": {
+          "const": "select_unpick"
+        },
+        "option_idx": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "option_idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Submit the current ICardSelector accumulator. Valid when len(accumulator) is in [min_select, max_select].",
+      "properties": {
+        "type": {
+          "const": "select_confirm"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Skip the current ICardSelector request. Only valid when min_select == 0.",
+      "properties": {
+        "type": {
+          "const": "select_skip"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Pick the next map node by (col, row). Must be reachable from the current node.",
+      "properties": {
+        "type": {
+          "const": "choose_map_node"
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "col",
+        "row"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Pick option_idx in the current event room. When event.is_finished, this clicks the synthetic PROCEED button.",
+      "properties": {
+        "type": {
+          "const": "choose_event_option"
+        },
+        "option_idx": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "option_idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Claim one reward item (gold, potion, relic, card_reward). For card rewards, immediately opens the card-reward sub-screen.",
+      "properties": {
+        "type": {
+          "const": "take_reward_item"
+        },
+        "idx": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index into reward.items"
+        }
+      },
+      "required": [
+        "type",
+        "idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Close the post-combat reward screen and proceed (either to map or to nested reward — handler picks the right exit).",
+      "properties": {
+        "type": {
+          "const": "leave_reward_screen"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Pick one card from the card-reward sub-screen (or skip via select_skip in some configurations).",
+      "properties": {
+        "type": {
+          "const": "card_reward_pick"
+        },
+        "idx": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index into card_reward_select.cards"
+        }
+      },
+      "required": [
+        "type",
+        "idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Pick one relic from a relic-select sub-screen (Neow PRECARIOUS_SHEARS, treasure rooms, etc.).",
+      "properties": {
+        "type": {
+          "const": "relic_pick"
+        },
+        "idx": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Pick one bundle from a NChooseABundleSelectionScreen (e.g. event 'choose a bundle' outcomes).",
+      "properties": {
+        "type": {
+          "const": "bundle_pick"
+        },
+        "idx": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Buy item entry_idx from the merchant. Flat-indexed across CardEntries + RelicEntries + PotionEntries + CardRemovalEntry.",
+      "properties": {
+        "type": {
+          "const": "shop_buy"
+        },
+        "entry_idx": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "entry_idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Leave the merchant.",
+      "properties": {
+        "type": {
+          "const": "shop_leave"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Pick a rest-site option (REST / SMITH / DIG / MEND / etc.) by option_idx. Some options chain into select_pick sub-screens (e.g. SMITH).",
+      "properties": {
+        "type": {
+          "const": "rest_choose"
+        },
+        "option_idx": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "option_idx"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Click the rest-site PROCEED button after an option resolves.",
+      "properties": {
+        "type": {
+          "const": "rest_leave"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Two-stage click in the game-over screen: continue button -> return to main menu button.",
+      "properties": {
+        "type": {
+          "const": "proceed_after_game_over"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "No-op. Useful for synchronization probes; returns ok=true immediately.",
+      "properties": {
+        "type": {
+          "const": "noop"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

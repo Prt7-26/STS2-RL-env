@@ -961,14 +961,14 @@ P2 milestone 出**两类 offline dataset**：
 | P0 | RngController（轻量版） | ✅ | Day-6 determinism test 通过 |
 | P0 | Gymnasium Env 类 + action mask | ✅ | Day-7 + Day-8 selector slots |
 | P0 | LLM baseline 示例 | ✅ | Day-11.B `examples/claude_baseline.py` ~150 行 |
-| P0 | 文档 + Schema 生成 | ⚠️ | Day-13: `sts2-gym/README.md` 重写为 30 分钟 quickstart（install → first episode → action space → save/restore → debugging）。CLAUDE.md / CODING_AGENT_BRIEF.md / IMPLEMENTATION_NOTES.md 已建。**JSON Schema codegen 仍待做**（P0 后期 / v0.1） |
+| P0 | 文档 + Schema 生成 | ✅ | Day-13 quickstart README + Day-14 JSON Schema codegen：`sts2_gym.schemas` 是 4 份 schema（action/observation/save_state/scenario_spec）的 Python source-of-truth，`python -m sts2_gym.gen_schemas` 导出到 `docs/schemas/*.schema.json`，`--check` 模式做 CI drift detect。配套 3 个 drift test：action_types vs StepRunner.cs / to_text coverage / on-disk schemas 同步 |
 
 ### 12.2 §11 P1 / P2 状态
 
 | 项 | 状态 | 备注 |
 |---|---|---|
 | P1 FastMode.Instant fix | ⚠️ | Day-13: `mod/Patches/NCreatureAnimDiePatch.cs` Harmony Prefix 在 Instant 模式下替换 AnimDie body，绕过 `parent.MoveChild(null,...)` NRE。Mod 开关已切到 `FastMode.Instant`。**待运行时验证**：step/s ≥ 50 目标 + Normal/Fast/Instant trajectory bit-exact 比对 |
-| P1 VectorEnv 验证 | ❌ | STS2 process singleton 约束，需要 Docker 或多机分布。1 周+ |
+| P1 VectorEnv 验证 | ⚠️ | Day-14: `STS2VectorEnv` 包装 Gymnasium `SyncVectorEnv` + 一个 N=2 isolation smoke test (`vector_smoke.py`)。配套 `GameProcess` 类，支持 manual launch + auto-spawn（`subprocess.Popen` 启 STS2 binary 直传 `STS2GYM_PORT` env）。**待运行时验证** N>1 process 隔离 + 同 user_data 目录下 settings.save 共享是否真的不互相搞坏；Async pickle 走 `build_async_vector_env` 但没测 |
 | P1 Floor-level + Run-level injector | ✅ | Day-9.2 `start_run` + Day-10.A `choose_map_node` 已覆盖整 run 走通 |
 | P1 Save/Restore 端点 | ✅ | Day-13: `GET /save_run` + `POST /restore_run`，复用 `RunManager.ToSave` + `RunState.FromSerializable` + `NGame.LoadRun` 的 Continue Run 路径。**仅 between-rooms**，mid-combat 返 409（path (b) `SerializableCombatState` 还没做）。客户端 `client.save_run() / restore_run(save)` + 验证脚本 `python -m sts2_gym.save_restore_test` |
 | P1 Ascension 缩放正确性 test | ⚠️ | Day-13: `python -m sts2_gym.ascension_test --levels 0,5,10` 自动化测 A4 (potion slot -1) + A5 (deck +1 AscendersBane) + 同 character/seed base deck 不变。配套加 `/abandon_run` 让脚本能连开 N 个 run。**A8/A9 怪物 HP/伤害 + A3 金币** 还要 in-combat probe，下一轮 |
@@ -992,12 +992,14 @@ P2 milestone 出**两类 offline dataset**：
 
 按 unblock 力度：
 
-1. ~~**FastMode.Instant fix**~~ — Day-13 已 Harmony patch，待运行时验证
-2. ~~**Save/Restore endpoints**~~ — Day-13 已 ship `/save_run` + `/restore_run`（between-rooms only）
-3. **Schema 生成 + Quickstart README** — 让外部用户能跑起来；P0 收尾
-4. **Ascension scaling test** — 论文严谨性
-5. **VectorEnv** — 训练吞吐量（前 3 个解了再说）
-6. **Mid-combat save**（SerializableCombatState path (b)） — MCTS/branching 解锁深度
+1. ~~**FastMode.Instant fix**~~ — Day-13 Harmony patch，待运行时验证
+2. ~~**Save/Restore endpoints**~~ — Day-13 ship `/save_run` + `/restore_run`（between-rooms only）
+3. ~~**Quickstart README + JSON Schema codegen**~~ — Day-13/14 ship，schemas drift test 进 `test_env_pure`
+4. ~~**Ascension scaling test**~~ — Day-13 ship（A4/A5 start-of-run）；A8/A9 in-combat 缩放仍待
+5. ~~**VectorEnv (initial)**~~ — Day-14 `STS2VectorEnv` + `GameProcess` ship，待 N>1 隔离运行时验证
+6. **Mid-combat save**（path (b) `SerializableCombatState`） — MCTS/branching 解锁深度
+7. **In-combat ascension test**（A8/A9 怪物 HP/伤害 + A3 金币缩放） — 需 deterministic encounter-injection 配合
+8. **Docker / 多语言 / Offline 数据集** — P2 系列
 
 ---
 

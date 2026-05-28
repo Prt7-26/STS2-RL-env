@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sts2-gym.local/schemas/scenario_spec.schema.json",
+  "title": "STS2-Gym ScenarioSpec (Run-level)",
+  "description": "Currently a stub matching POST /start_run. The Combat-level / Floor-level injection layers planned in dev plan §2.2 are not yet implemented.",
+  "type": "object",
+  "properties": {
+    "character": {
+      "type": "string",
+      "enum": [
+        "IRONCLAD",
+        "SILENT",
+        "DEFECT",
+        "NECROBINDER",
+        "REGENT"
+      ],
+      "description": "Case-insensitive on the wire; this schema lists the canonical UPPER form."
+    },
+    "ascension": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "default": 0,
+      "description": "0..10. A1+ Swarming Elites, A4+ Tight Belt (−1 potion slot), A5+ AscendersBane in deck, etc. See dev plan §3.6."
+    },
+    "seed": {
+      "type": "string",
+      "description": "Free-form seed string. If omitted, server generates 'GYM<UTC-ticks>'. Same seed + character ⇒ identical RNG streams."
+    }
+  },
+  "required": [
+    "character"
+  ],
+  "additionalProperties": false
+}

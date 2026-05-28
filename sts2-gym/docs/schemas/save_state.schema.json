@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sts2-gym.local/schemas/save_state.schema.json",
+  "title": "STS2-Gym SaveState envelope",
+  "description": "Response shape of GET /save_run / accepted body of POST /restore_run. The `save` field is an opaque SerializableRun JSON document defined by the game's own save system — we don't re-spec its 30+ nested types. Game source: MegaCrit.Sts2.Core.Saves.SerializableRun.",
+  "type": "object",
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "type": "integer"
+    },
+    "ascension": {
+      "type": "integer"
+    },
+    "current_act_index": {
+      "type": "integer"
+    },
+    "rng_streams": {
+      "type": "integer"
+    },
+    "deck_size": {
+      "type": "integer"
+    },
+    "hp": {
+      "type": "integer"
+    },
+    "save": {
+      "type": "object",
+      "description": "Opaque SerializableRun. Round-trip via /restore_run."
+    }
+  },
+  "required": [
+    "ok",
+    "save"
+  ]
+}

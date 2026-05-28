@@ -18,6 +18,8 @@ has manually started a run + entered the desired encounter at least once):
 from __future__ import annotations
 
 from sts2_gym.client import DEFAULT_PORT, ModBridgeClient, StepError
+from sts2_gym.process import GameProcess
+from sts2_gym.vector_env import STS2VectorEnv, build_async_vector_env
 from sts2_gym.env import (
     ACTION_DIM,
     ENEMY_MAX,
@@ -54,6 +56,9 @@ __all__ = [
     "StepError",
     "DEFAULT_PORT",
     "STS2CombatEnv",
+    "STS2VectorEnv",
+    "GameProcess",
+    "build_async_vector_env",
     "Registry",
     "UNKNOWN_IDX",
     "ACTION_DIM",

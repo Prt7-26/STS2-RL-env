@@ -304,6 +304,26 @@ sts2-gym/scripts/unstick.sh status
 
 ---
 
+## Schema (wire protocol)
+
+The Action / Observation / SaveState / ScenarioSpec wire-protocol schemas are
+codegened from [`py/sts2_gym/schemas.py`](py/sts2_gym/schemas.py) (Python
+source-of-truth) into [`docs/schemas/`](docs/schemas/) as Draft 2020-12
+JSON Schema:
+
+```bash
+cd sts2-gym/py
+python -m sts2_gym.gen_schemas          # writes docs/schemas/*.schema.json
+python -m sts2_gym.gen_schemas --check  # CI: non-zero exit on drift
+```
+
+The pure-function test suite (`python -m sts2_gym.test_env_pure`) includes a
+drift check that compares the 19 action types in `schemas.py` against the
+mod's actual `StepRunner.cs` dispatch switch — so renaming an action on either
+side without updating the schemas trips the test.
+
+---
+
 ## Architecture
 
 - **Mod** ([`mod/`](mod/)) — C# class library, `[ModInitializer]` entry, runs inside the game process. HTTP listener single-threaded; all game-thread work marshalled via `GameThread.RunOnMainAsync`.
@@ -314,9 +334,49 @@ Detailed architecture + design decisions: [`../IMPLEMENTATION_NOTES.md`](../IMPL
 
 ---
 
+## Multi-instance (VectorEnv)
+
+STS2's `RunManager.Instance` is a per-process singleton, so each parallel env
+needs its own OS process. Two recipes:
+
+**Manual launch** — pre-launch N STS2 instances via Steam, each with a unique
+`STS2GYM_PORT`:
+
+```bash
+for port in 7777 7778 7779 7780; do
+    STS2GYM_PORT=$port STS2GYM_PORT_LOCKFILE=/tmp/sts2_gym_$port.port \
+        open -na "Slay the Spire 2"
+done
+```
+
+Then from Python:
+
+```python
+from sts2_gym import STS2VectorEnv
+venv = STS2VectorEnv.from_ports([7777, 7778, 7779, 7780],
+                                 character="IRONCLAD",
+                                 ascension=[0, 0, 5, 10])
+obs, info = venv.reset()
+obs, r, term, trunc, info = venv.step(action_batch)
+venv.close()
+```
+
+**Auto-spawn** (CI / batch jobs — bypasses Steam):
+
+```python
+from sts2_gym import STS2VectorEnv
+venv = STS2VectorEnv.spawn(num_envs=4, base_port=7777, character="IRONCLAD")
+# ... train ...
+venv.close()  # also terminates each spawned STS2 process
+```
+
+Smoke test: `python -m sts2_gym.vector_smoke --ports 7777,7778 --ascensions 0,5`
+verifies the two instances stay independent (A0 has no AscendersBane, A5
+has 1) — this is the dev plan §6 process-isolation check.
+
 ## Caveats
 
-- **Single process = single env.** STS2's `RunManager.Instance` is a singleton, so VectorEnv requires N OS processes. See [dev plan §2.7](../STS2_GYM_DEV_PLAN.md#27-实例生命周期).
+- **Single process = single env.** Each parallel env needs its own STS2 process; see VectorEnv above. Dev plan reference: [§2.7](../STS2_GYM_DEV_PLAN.md#27-实例生命周期).
 - **macOS path.** Mod must live at `<install>/SlayTheSpire2.app/Contents/MacOS/mods/sts2gym/`. The deploy script handles this.
 - **Game updates.** STS2 is in EA; new patches may break action / model IDs. `/registry` includes `content_hash` to detect drift.
 - **`decompiled_dll/` is local-only**, not pushed to any public repo (per legal redlines in [CLAUDE.md](../CLAUDE.md)).

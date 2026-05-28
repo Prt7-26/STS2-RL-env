@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sts2-gym.local/schemas/observation.schema.json",
+  "title": "STS2-Gym Observation",
+  "description": "Top-level shape of the JSON returned by GET /observe. Sub-objects (combat, selector, map, event, reward, shop, rest, etc.) appear only when relevant to the current phase. RNG state under run.rng.counters is hidden when ?partial=1.",
+  "type": "object",
+  "properties": {
+    "phase": {
+      "type": "string",
+      "enum": [
+        "main_menu",
+        "combat",
+        "combat_pending",
+        "card_select",
+        "card_reward_select",
+        "relic_select",
+        "bundle_select",
+        "map",
+        "event",
+        "reward",
+        "shop",
+        "rest",
+        "game_over",
+        "between_rooms"
+      ],
+      "description": "Coarse-grained game state discriminator. See dev plan §3.1."
+    },
+    "in_run": {
+      "type": "boolean",
+      "description": "False at main menu."
+    },
+    "snapshot_age_ms": {
+      "type": "integer",
+      "description": "Milliseconds since the cached snapshot was last refreshed by a subscribed game event."
+    },
+    "partial": {
+      "type": "boolean",
+      "description": "True if the response was fetched with ?partial=1 (RNG / RelicGrabBag masked)."
+    },
+    "combat": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase ∈ {combat, card_select, combat_pending}. See mod/CombatSnapshot.cs for fields.",
+      "properties": {
+        "round": {
+          "type": "integer"
+        },
+        "play_phase": {
+          "type": "boolean"
+        },
+        "encounter": {
+          "type": "string"
+        },
+        "creatures": {
+          "type": "array"
+        },
+        "players": {
+          "type": "array"
+        },
+        "hittable_enemy_count": {
+          "type": "integer"
+        }
+      }
+    },
+    "selector": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when an ICardSelector request is open (Day-8.1).",
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "options": {
+          "type": "array"
+        },
+        "accumulator": {
+          "type": "array"
+        },
+        "min_select": {
+          "type": "integer"
+        },
+        "max_select": {
+          "type": "integer"
+        },
+        "context": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "map": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'map'.",
+      "properties": {
+        "current": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "reachable": {
+          "type": "array"
+        }
+      }
+    },
+    "event": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'event'.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array"
+        },
+        "is_finished": {
+          "type": "boolean"
+        }
+      }
+    },
+    "reward": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'reward' (post-combat NRewardsScreen).",
+      "properties": {
+        "items": {
+          "type": "array"
+        }
+      }
+    },
+    "card_reward_select": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'card_reward_select' (NCardRewardSelectionScreen).",
+      "properties": {
+        "cards": {
+          "type": "array"
+        }
+      }
+    },
+    "relic_select": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'relic_select'.",
+      "properties": {
+        "items": {
+          "type": "array"
+        }
+      }
+    },
+    "bundle_select": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'bundle_select'.",
+      "properties": {
+        "bundles": {
+          "type": "array"
+        }
+      }
+    },
+    "shop": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'shop'.",
+      "properties": {
+        "items": {
+          "type": "array"
+        },
+        "player_gold": {
+          "type": "integer"
+        }
+      }
+    },
+    "rest": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'rest'.",
+      "properties": {
+        "options": {
+          "type": "array"
+        }
+      }
+    },
+    "game_over": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'game_over'.",
+      "properties": {
+        "can_proceed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "run": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Full SerializableRun JSON for the current run (dev plan §2.1 path a). Same shape produced by the game's own save system. Includes deck, HP, gold, potions, relics, RNG state, map, modifiers, visited rooms. Under ?partial=1, rng.counters + shared_relic_grab_bag.pool are masked.",
+      "properties": {
+        "schema_version": {
+          "type": "integer"
+        },
+        "ascension": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "current_act_index": {
+          "type": "integer"
+        },
+        "players": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "character_id": {
+                "type": [
+                  "string",
+                  "object"
+                ]
+              },
+              "current_hp": {
+                "type": "integer"
+              },
+              "max_hp": {
+                "type": "integer"
+              },
+              "max_energy": {
+                "type": "integer"
+              },
+              "max_potion_slot_count": {
+                "type": "integer"
+              },
+              "gold": {
+                "type": "integer"
+              },
+              "deck": {
+                "type": "array"
+              },
+              "relics": {
+                "type": "array"
+              },
+              "potions": {
+                "type": "array"
+              }
+            },
+            "required": [
+              "current_hp",
+              "max_hp",
+              "deck"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "phase",
+    "in_run",
+    "snapshot_age_ms"
+  ]
+}
