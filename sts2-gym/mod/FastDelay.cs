@@ -35,13 +35,12 @@ internal static class FastDelay
 
         return mode switch
         {
-            // Day-14.9: lowered Instant floor from 30ms -> 15ms. SPEED9 showed
-            // combat at 12 step/s, dominated by /step noop's 2-frame marshal
-            // floor (16ms @ 60fps). Tightening the in-mod poll cadence to
-            // sub-frame (15ms) lets the poll wake on the very next Godot
-            // _Process tick after the awaited Task completes, instead of
-            // overshooting one whole frame. Ceiling stays at 80ms.
-            FastModeType.Instant => Math.Clamp(ms / 6, 15, 80),
+            // Day-14.9 attempted 15ms floor; SPEEDA measured combat regressed
+            // from 0.083s/step (SPEED9) to 0.144s/step. 15ms is below Godot's
+            // 16.67ms frame tick — every poll context-switches back to main
+            // thread WITHIN the same frame, so the poll fires twice per frame
+            // for nothing while adding scheduler thrash. Reverted to 30ms.
+            FastModeType.Instant => Math.Clamp(ms / 6, 30, 80),
             FastModeType.Fast    => ms / 2,
             _                    => ms,
         };
