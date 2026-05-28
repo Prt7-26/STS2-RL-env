@@ -1,4 +1,5 @@
 using System;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Logging;
@@ -86,6 +87,24 @@ public static class Sts2GymMod
 
             Log.Info($"{LogTag} subscriptions: RunStarted, RoomEntered, RoomExited, CombatSetUp, CombatEnded, CombatWon, TurnStarted, TurnEnded, PlayerActionsDisabledChanged");
 
+            // ModInitializer mods skip the automatic Harmony.PatchAll (see
+            // ModManager.cs:546-552), so do it explicitly here. Patches live in
+            // Sts2Gym.Patches.* — currently NCreatureAnimDiePatch which makes
+            // FastMode.Instant safe (vanilla bug: AnimDie does
+            // parent.MoveChild(null, ...) when NMonsterDeathVfx.Create returns
+            // null in Instant mode).
+            try
+            {
+                var harmony = new Harmony($"sts2gym.harmony.{ModId}");
+                harmony.PatchAll(typeof(Sts2GymMod).Assembly);
+                Log.Info($"{LogTag} Harmony patches applied: {string.Join(", ", System.Linq.Enumerable.Select(Harmony.GetAllPatchedMethods(), m => (m.DeclaringType?.Name ?? "?") + "." + m.Name))}");
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"{LogTag} Harmony.PatchAll failed: {ex}");
+                throw;
+            }
+
             // Day-3 P0 milestone: start the HTTP bridge so Python side can probe state.
             // HttpListener does NOT depend on Godot scene tree, safe to start in ExecuteVeryEarly.
             HttpBridge.Start();
@@ -127,12 +146,14 @@ public static class Sts2GymMod
                 Log.Info($"{LogTag} ICardSelector re-pushed for run #{_runsObserved}");
             }
 
-            // FastMode toggle. Day-1 实测发现 Instant 触发 NCreature.AnimDie 内 Node.MoveChild(null) 报 ERROR,
-            // 这正是 dev plan §2.4 / 任务 C 标注的 AutoSlayer 也避开 Instant 的 corner case 之一。
-            // 暂时降到 Fast (animation 仍快 ~2x), P1 milestone 再考虑用 Harmony 修 AnimDie 的 null 引用以重新启用 Instant.
+            // FastMode toggle. Day-13: NCreatureAnimDiePatch makes Instant safe
+            // (vanilla bug at NCreature.AnimDie was parent.MoveChild(null, ...) when
+            // NMonsterDeathVfx.Create returns null in Instant mode). With the patch
+            // installed we can finally run at Instant for ~50x animation speedup —
+            // step/s target ≥ 50 per dev plan §2.4 / §11 P1.
             var prevFast = SaveManager.Instance.PrefsSave.FastMode;
-            SaveManager.Instance.PrefsSave.FastMode = FastModeType.Fast;
-            Log.Info($"{LogTag} FastMode: {prevFast} -> Fast (Instant deferred — triggers AnimDie null ref)");
+            SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
+            Log.Info($"{LogTag} FastMode: {prevFast} -> Instant (AnimDie patched via Harmony)");
 
             // dev plan §2.1 path (a): SerializableRun reuse for between-rooms state.
             // This call should be near-free; confirm it doesn't blow up at run-start.

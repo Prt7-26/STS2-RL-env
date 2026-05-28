@@ -162,7 +162,7 @@ return new { ..., selector_active = Sts2GymMod.Selector.IsActive };
 
 ### 4.5 Combat quirks
 - `CardCmd.AutoPlay` **不扣能量**（专门给 WhisperingEarring / KnifeTrap 等用），必须用 `card.TryManualPlay(target)` 才是玩家手动出牌路径
-- `FastMode.Instant` 触发 `NCreature.AnimDie` 里 `Node.MoveChild(null)` NRE — 用 `FastMode.Fast`（动画快但有，bit-exact）
+- `FastMode.Instant` 触发 `NCreature.AnimDie` 里 `parent.MoveChild(null, ...)` NRE（vanilla bug：`NMonsterDeathVfx.Create` 在 Instant 模式返回 null，AnimDie 没 null-check）。**Day-13 修复**：`mod/Patches/NCreatureAnimDiePatch.cs` 用 Harmony Prefix 在 Instant 模式下短路整个 async body，只保留 `QueueFreeSafely()` + `OstyScaleToSize` 这两个逻辑必要的副作用。开关现在是 `FastMode.Instant`。ReattachPower 同样调 `NMonsterDeathVfx.Create` 但自己 null-check 了（`ReattachPower.cs:118`），不需要补丁
 - `ActionQueueSet.BecameEmpty()` 返回的 Task **可能立刻 completed**（如果当时队列就是空的）。`PlayerCmd.EndTurn` 是 fire-and-forget 异步入队，调完立刻 `BecameEmpty()` 会得到 already-completed 的 Task —— 不是真的等到回合完。`EndTurnAsync` 改用 poll `IsPlayPhase` 翻转
 
 ### 4.6 RNG / Determinism
