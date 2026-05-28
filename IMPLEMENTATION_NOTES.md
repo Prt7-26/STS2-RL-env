@@ -143,6 +143,7 @@ Run-level endpoints（不绑特定 phase，整 run 任意 between-room 时刻可
 |---|---|---|---|
 | `/save_run` | GET | 当前 run 的 `SerializableRun` JSON（18+ 顶层字段 + 全量 RNG state + Acts + 玩家 deck/HP/gold/relics + 地图） | `RunManager.ToSave(null)` + `JsonSerializationUtility.GetTypeInfo<SerializableRun>()`。中场（combat 进行中）返 409 — mid-combat state 不在 SerializableRun 里（dev plan §2.1 path (a) vs (b)） |
 | `/restore_run` | POST `{"save": <SerializableRun JSON>}` | 用提供的 save 替换当前 run | `CleanUp(graceful=false)` → `RunState.FromSerializable` → `SetUpSavedSinglePlayer` → `LoadRun`，对齐 `NMainMenu.OnContinueButtonPressedAsync` 的 Continue Run 路径 |
+| `/abandon_run` | POST | 强制结束当前 run（不入 game-over，直接 CleanUp） | `RunManager.CleanUp(graceful=false)`。无 run 时返 `was_active=false`。给 `ascension_test.py` 等需要连开 N 个 run 的测试用 |
 
 ---
 

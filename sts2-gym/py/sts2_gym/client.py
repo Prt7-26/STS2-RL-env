@@ -193,6 +193,15 @@ class ModBridgeClient:
             payload["seed"] = seed
         return self._post_json("/start_run", payload, timeout=30.0)
 
+    def abandon_run(self) -> dict[str, Any]:
+        """Tear down the currently active run via RunManager.CleanUp.
+
+        No-op (returns ``{"ok": True, "was_active": False}``) if no run is
+        active. Used to chain multiple :meth:`start_run` calls in tests like
+        :mod:`sts2_gym.ascension_test`.
+        """
+        return self._post_json("/abandon_run", {}, timeout=15.0)
+
     # ---------- Day-13 Save / Restore ----------
 
     def save_run(self) -> dict[str, Any]:

@@ -971,7 +971,7 @@ P2 milestone 出**两类 offline dataset**：
 | P1 VectorEnv 验证 | ❌ | STS2 process singleton 约束，需要 Docker 或多机分布。1 周+ |
 | P1 Floor-level + Run-level injector | ✅ | Day-9.2 `start_run` + Day-10.A `choose_map_node` 已覆盖整 run 走通 |
 | P1 Save/Restore 端点 | ✅ | Day-13: `GET /save_run` + `POST /restore_run`，复用 `RunManager.ToSave` + `RunState.FromSerializable` + `NGame.LoadRun` 的 Continue Run 路径。**仅 between-rooms**，mid-combat 返 409（path (b) `SerializableCombatState` 还没做）。客户端 `client.save_run() / restore_run(save)` + 验证脚本 `python -m sts2_gym.save_restore_test` |
-| P1 Ascension 缩放正确性 test | ❌ | 半天工作量 |
+| P1 Ascension 缩放正确性 test | ⚠️ | Day-13: `python -m sts2_gym.ascension_test --levels 0,5,10` 自动化测 A4 (potion slot -1) + A5 (deck +1 AscendersBane) + 同 character/seed base deck 不变。配套加 `/abandon_run` 让脚本能连开 N 个 run。**A8/A9 怪物 HP/伤害 + A3 金币** 还要 in-combat probe，下一轮 |
 | P2 系列 | ❌ | Docker / 多语言 / Offline 数据集——按 P0/P1 收尾后再说 |
 
 ### 12.3 实施中沉淀的关键 insight（详见 [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md)）

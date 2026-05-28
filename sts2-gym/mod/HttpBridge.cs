@@ -704,6 +704,31 @@ internal static class HttpBridge
                 (status, body) = RunStarter.HandleStartRunAsync(ctx).GetAwaiter().GetResult();
                 break;
 
+            case "/abandon_run":
+                // POST. Tear down the current run via RunManager.CleanUp so a
+                // subsequent /start_run can succeed. Used by ascension_test.py
+                // which spawns multiple runs back-to-back. No-op if no run is
+                // active. Must run on the Godot main thread because CleanUp
+                // touches the scene tree (NOverlayStack.Clear, NMapScreen, etc).
+                if (method != "POST") { status = 405; body = "{\"ok\":false,\"error\":\"POST only\"}"; break; }
+                (status, body) = GameThread.RunOnMainAsync(() =>
+                {
+                    if (!RunManager.Instance.IsInProgress)
+                        return Task.FromResult((200, "{\"ok\":true,\"was_active\":false}"));
+                    try
+                    {
+                        RunManager.Instance.CleanUp(graceful: false);
+                        RefreshObservation();
+                        return Task.FromResult((200, "{\"ok\":true,\"was_active\":true}"));
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error($"{Tag} /abandon_run CleanUp threw: {ex}");
+                        return Task.FromResult((500, $"{{\"ok\":false,\"error\":\"CleanUp threw\",\"message\":{JsonEncodedString(ex.Message)}}}"));
+                    }
+                }).GetAwaiter().GetResult();
+                break;
+
             case "/save_run":
                 // GET only. Returns the current run as a JSON-serialized
                 // SerializableRun, recoverable via POST /restore_run.
