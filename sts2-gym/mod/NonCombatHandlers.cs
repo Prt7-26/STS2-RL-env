@@ -24,6 +24,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic;
 
 namespace Sts2Gym;
 
@@ -815,6 +816,154 @@ internal static class NonCombatHandlers
         await Task.Delay(400);
         HttpBridge.RefreshObservation();
         return (200, "{\"ok\":true,\"action\":\"rest_leave\"}");
+    }
+
+    // -------------------------------------------------- treasure room
+
+    public struct TreasureHolderInfo
+    {
+        public bool IsEnabled;
+        public string? RelicId;
+        public string? Rarity;
+    }
+
+    public struct TreasureRoomInfo
+    {
+        public bool ChestOpen;
+        public bool CanProceed;
+        public List<TreasureHolderInfo> Holders;
+    }
+
+    /// <summary>
+    /// Best-effort snapshot of the current NTreasureRoom. Returns
+    /// ChestOpen=false + empty holders if there's no treasure room visible
+    /// (or the scene tree hasn't finished setting up).
+    /// </summary>
+    public static TreasureRoomInfo PeekTreasure()
+    {
+        var info = new TreasureRoomInfo { Holders = new List<TreasureHolderInfo>() };
+        try
+        {
+            var room = FindCurrentTreasureRoom();
+            if (room == null) return info;
+            info.ChestOpen = room.Get(NTreasureRoom.PropertyName._hasChestBeenOpened).AsBool();
+            info.CanProceed = room.ProceedButton?.IsEnabled == true;
+            foreach (var h in UiHelper.FindAll<NTreasureRoomRelicHolder>(room))
+            {
+                if (!h.Visible) continue;
+                var model = h.Relic?.Model;
+                info.Holders.Add(new TreasureHolderInfo
+                {
+                    IsEnabled = h.IsEnabled,
+                    RelicId = model?.Id.Entry,
+                    Rarity = model?.Rarity.ToString(),
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"{Tag} PeekTreasure failed: {ex.Message}");
+        }
+        return info;
+    }
+
+    private static NTreasureRoom? FindCurrentTreasureRoom()
+    {
+        // NTreasureRoom is mounted under /root/Game/RootSceneContainer/Run/RoomContainer/TreasureRoom
+        // per AutoSlay's TreasureRoomHandler; UiHelper.FindAll from the scene root
+        // surfaces the live instance without us depending on absolute paths.
+        var sceneTree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+        var root = sceneTree?.Root;
+        if (root == null) return null;
+        return UiHelper.FindFirst<NTreasureRoom>(root);
+    }
+
+    public static async Task<(int, string)> TreasureOpenAsync()
+    {
+        var room = FindCurrentTreasureRoom();
+        if (room == null)
+            return (409, "{\"ok\":false,\"error\":\"no NTreasureRoom in scene tree\"}");
+
+        if (room.Get(NTreasureRoom.PropertyName._hasChestBeenOpened).AsBool())
+            return (200, "{\"ok\":true,\"action\":\"treasure_open\",\"already_open\":true}");
+
+        var chest = room.GetNodeOrNull<NClickableControl>("%Chest");
+        if (chest == null)
+            return (500, "{\"ok\":false,\"error\":\"chest button not found in NTreasureRoom\"}");
+
+        try { await UiHelper.Click(chest); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+
+        // Chest open animation + RelicCollection populate need a moment.
+        await Task.Delay(400);
+        HttpBridge.RefreshObservation();
+        return (200, "{\"ok\":true,\"action\":\"treasure_open\"}");
+    }
+
+    public static async Task<(int, string)> TreasurePickAsync(JsonElement cmd)
+    {
+        if (!cmd.TryGetProperty("idx", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'idx'\"}");
+        int idx = idxProp.GetInt32();
+
+        var room = FindCurrentTreasureRoom();
+        if (room == null)
+            return (409, "{\"ok\":false,\"error\":\"no NTreasureRoom in scene tree\"}");
+
+        var holders = UiHelper.FindAll<NTreasureRoomRelicHolder>(room)
+                              .Where(h => h.Visible)
+                              .ToList();
+        if (holders.Count == 0)
+            return (409, "{\"ok\":false,\"error\":\"no visible relic holders — open chest first?\"}");
+        if (idx < 0 || idx >= holders.Count)
+            return (400, $"{{\"ok\":false,\"error\":\"idx out of range\",\"got\":{idx},\"count\":{holders.Count}}}");
+
+        var holder = holders[idx];
+        if (!holder.IsEnabled)
+            return (409, $"{{\"ok\":false,\"error\":\"relic holder disabled\",\"idx\":{idx}}}");
+
+        var relicId = holder.Relic?.Model?.Id.Entry;
+        try { await UiHelper.Click(holder); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+
+        await Task.Delay(400);
+        HttpBridge.RefreshObservation();
+        return (200, $"{{\"ok\":true,\"action\":\"treasure_pick\",\"idx\":{idx},\"relic_id\":{JsonStr(relicId)}}}");
+    }
+
+    public static async Task<(int, string)> TreasureLeaveAsync()
+    {
+        var room = FindCurrentTreasureRoom();
+        if (room == null)
+            return (409, "{\"ok\":false,\"error\":\"no NTreasureRoom in scene tree\"}");
+
+        var proceed = room.ProceedButton;
+        if (proceed == null)
+            return (500, "{\"ok\":false,\"error\":\"no proceed button found in NTreasureRoom\"}");
+
+        // Wait briefly for proceed to enable (claim animations).
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (DateTime.UtcNow < deadline && !proceed.IsEnabled)
+            await Task.Delay(80);
+
+        if (!proceed.IsEnabled)
+            return (409, "{\"ok\":false,\"error\":\"proceed button not enabled — claim or skip remaining relics first\"}");
+
+        try { await UiHelper.Click(proceed); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+
+        await Task.Delay(300);
+        HttpBridge.RefreshObservation();
+        return (200, "{\"ok\":true,\"action\":\"treasure_leave\"}");
     }
 
     // -------------------------------------------------- helpers

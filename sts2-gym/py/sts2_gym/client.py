@@ -193,6 +193,18 @@ class ModBridgeClient:
             payload["seed"] = seed
         return self._post_json("/start_run", payload, timeout=30.0)
 
+    def treasure_open(self) -> dict[str, Any]:
+        """Day-14: click the chest in a treasure room. No-op if already open."""
+        return self._post_json("/step", {"type": "treasure_open"}, timeout=15.0)
+
+    def treasure_pick(self, idx: int) -> dict[str, Any]:
+        """Day-14: click a NTreasureRoomRelicHolder by idx (chest must be open first)."""
+        return self._post_json("/step", {"type": "treasure_pick", "idx": int(idx)}, timeout=15.0)
+
+    def treasure_leave(self) -> dict[str, Any]:
+        """Day-14: click the proceed button to leave the treasure room."""
+        return self._post_json("/step", {"type": "treasure_leave"}, timeout=15.0)
+
     def abandon_run(self) -> dict[str, Any]:
         """Tear down the currently active run via RunManager.CleanUp.
 

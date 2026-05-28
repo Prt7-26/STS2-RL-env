@@ -158,6 +158,27 @@ ACTION_TYPE_SCHEMAS: dict[str, dict[str, Any]] = {
         "required": ["type", "idx"],
         "additionalProperties": False,
     },
+    "treasure_open": {
+        "description": "Click the chest in a treasure room. No-op if already open. Per AutoSlay TreasureRoomHandler: first step in treasure-room flow.",
+        "properties": {"type": {"const": "treasure_open"}},
+        "required": ["type"],
+        "additionalProperties": False,
+    },
+    "treasure_pick": {
+        "description": "Click a NTreasureRoomRelicHolder by idx (chest must be open first).",
+        "properties": {
+            "type": {"const": "treasure_pick"},
+            "idx": {"type": "integer", "minimum": 0, "description": "0-based index into treasure.relics"},
+        },
+        "required": ["type", "idx"],
+        "additionalProperties": False,
+    },
+    "treasure_leave": {
+        "description": "Click the proceed button to leave the treasure room.",
+        "properties": {"type": {"const": "treasure_leave"}},
+        "required": ["type"],
+        "additionalProperties": False,
+    },
     "shop_buy": {
         "description": "Buy item entry_idx from the merchant. Flat-indexed across CardEntries + RelicEntries + PotionEntries + CardRemovalEntry.",
         "properties": {
@@ -247,6 +268,7 @@ _PHASE_ENUM = [
     "card_reward_select",
     "relic_select",
     "bundle_select",
+    "treasure",
     "map",
     "event",
     "reward",
@@ -341,6 +363,15 @@ OBSERVATION_SCHEMA: dict[str, Any] = {
             "type": ["object", "null"],
             "description": "Present when phase == 'bundle_select'.",
             "properties": {"bundles": {"type": "array"}},
+        },
+        "treasure": {
+            "type": ["object", "null"],
+            "description": "Present when phase == 'treasure' (NTreasureRoom — Day-14).",
+            "properties": {
+                "chest_open": {"type": "boolean"},
+                "can_proceed": {"type": "boolean"},
+                "relics": {"type": "array"},
+            },
         },
         "shop": {
             "type": ["object", "null"],

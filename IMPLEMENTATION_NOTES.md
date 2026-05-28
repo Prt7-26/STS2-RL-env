@@ -136,6 +136,7 @@ return new { ..., selector_active = Sts2GymMod.Selector.IsActive };
 | `shop` | `shop.items=[{entry_idx,kind,id,cost,is_stocked,enough_gold}]` `shop.player_gold` | `shop_buy{entry_idx}` / `shop_leave` | entry flat-indexed across `CardEntries + RelicEntries + PotionEntries + CardRemovalEntry` |
 | `rest` | `rest.options=[{option_idx,option_id,is_enabled}]` | `rest_choose{option_idx}` / `rest_leave` | rest_choose 走 `UiHelper.Click(NRestSiteButton)` |
 | `game_over` | `game_over.can_proceed` | `proceed_after_game_over` | 两 stage：`NGameOverContinueButton` → `NReturnToMainMenuButton` |
+| `treasure` | `treasure.chest_open` `treasure.can_proceed` `treasure.relics=[{idx,id,rarity,is_enabled}]` | `treasure_open` / `treasure_pick{idx}` / `treasure_leave` | Day-14：参照 AutoSlay `TreasureRoomHandler` — `%Chest` NButton click → `_hasChestBeenOpened=true` → `NTreasureRoomRelicHolder[]` 浮现 → 各自 click 领 → `NProceedButton` 离开 |
 
 Run-level endpoints（不绑特定 phase，整 run 任意 between-room 时刻可调）：
 

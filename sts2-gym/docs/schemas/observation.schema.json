@@ -15,6 +15,7 @@
         "card_reward_select",
         "relic_select",
         "bundle_select",
+        "treasure",
         "map",
         "event",
         "reward",
@@ -174,6 +175,24 @@
       "description": "Present when phase == 'bundle_select'.",
       "properties": {
         "bundles": {
+          "type": "array"
+        }
+      }
+    },
+    "treasure": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Present when phase == 'treasure' (NTreasureRoom — Day-14).",
+      "properties": {
+        "chest_open": {
+          "type": "boolean"
+        },
+        "can_proceed": {
+          "type": "boolean"
+        },
+        "relics": {
           "type": "array"
         }
       }

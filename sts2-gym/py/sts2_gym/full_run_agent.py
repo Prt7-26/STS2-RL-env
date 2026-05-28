@@ -170,6 +170,8 @@ def run_one_full_run(
                 _do_relic_select_step(c, obs, rng, verbose=verbose)
             elif effective == "bundle_select":
                 _do_bundle_select_step(c, obs, rng, verbose=verbose)
+            elif effective == "treasure":
+                _do_treasure_step(c, obs, rng, verbose=verbose)
             elif effective == "game_over":
                 _do_game_over_step(c, verbose=verbose)
                 summary["stopped"] = "game_over"
@@ -267,25 +269,43 @@ def _do_event_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, 
 
 
 _reward_empty_strikes = {"count": 0}  # module-level: consecutive empty observations
+_reward_stuck_tries: dict[int, int] = {}  # idx → consecutive attempts (skip after N)
+_REWARD_STUCK_LIMIT = 3
+_reward_skipped_idx: set[int] = set()  # idx we've given up on this reward screen
 
 
 def _do_reward_step(c: ModBridgeClient, obs: dict[str, Any] | None = None, *, verbose: bool) -> None:
-    """Day-10.K: claim every enabled reward item, including card rewards.
+    """Day-10.K + Day-14 hotfix: claim every enabled reward item.
 
     Race guard: CombatEnded → NRewardsScreen pushes → BUT reward items take
-    a few frames to populate. If we don't guard, agent enters reward phase,
-    sees items=[] on the first poll, leaves immediately, and skips all
-    loot. We require 5 consecutive empty observations (~1s) before
+    a few frames to populate. Require 5 consecutive empty observations before
     accepting "nothing to claim".
+
+    Stuck-loop guard: a reward item can be ``is_enabled=true`` in the UI but
+    silently fail to consume (e.g. PotionReward when all 3 potion slots are
+    full; NRewardButton stays clickable but click is no-op). After
+    ``_REWARD_STUCK_LIMIT`` attempts on the same idx with no state change we
+    add it to a per-screen skip set and try the next eligible idx. Leaving
+    the screen flushes the skip set.
     """
     reward = (obs or {}).get("reward") or {}
     items = reward.get("items") or []
-    eligible = [it for it in items if it.get("is_enabled")]
+    eligible = [it for it in items if it.get("is_enabled") and it.get("idx") not in _reward_skipped_idx]
     if eligible:
         _reward_empty_strikes["count"] = 0
         pick = eligible[0]
-        if verbose: print(f"[full-run]   reward → take idx={pick['idx']} type={pick.get('reward_type')}")
-        c.take_reward_item(pick["idx"])
+        idx = pick["idx"]
+        tries = _reward_stuck_tries.get(idx, 0) + 1
+        _reward_stuck_tries[idx] = tries
+        if tries > _REWARD_STUCK_LIMIT:
+            if verbose:
+                print(f"[full-run]   reward → idx={idx} type={pick.get('reward_type')} "
+                      f"unclaimable after {tries-1} tries (full slot? skipping)")
+            _reward_skipped_idx.add(idx)
+            _reward_stuck_tries.pop(idx, None)
+            return
+        if verbose: print(f"[full-run]   reward → take idx={idx} type={pick.get('reward_type')} (try {tries})")
+        c.take_reward_item(idx)
         return
     # Empty items list — could be transient (screen still loading) or real
     # (everything claimed). Wait a few polls to disambiguate.
@@ -294,8 +314,11 @@ def _do_reward_step(c: ModBridgeClient, obs: dict[str, Any] | None = None, *, ve
         if verbose: print(f"[full-run]   reward → empty items (strike {_reward_empty_strikes['count']}/5); waiting for populate")
         time.sleep(0.2)
         return
-    # 5× empty — really nothing left. Leave.
+    # 5× empty — really nothing left. Leave. Reset the per-screen stuck-skip
+    # set so the next reward screen starts fresh.
     _reward_empty_strikes["count"] = 0
+    _reward_skipped_idx.clear()
+    _reward_stuck_tries.clear()
     if verbose: print(f"[full-run]   reward → leave (confirmed empty after 5 polls)")
     c.leave_reward_screen()
 
@@ -341,6 +364,47 @@ def _do_bundle_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.
         summary = ", ".join(f"[{b['idx']}]{b.get('cards', [])}" for b in bundles)
         print(f"[full-run]   bundle_select [{summary}] → pick {pick['idx']}")
     c.bundle_pick(pick["idx"])
+
+
+def _do_treasure_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
+    """Day-14: NTreasureRoom — open chest → pick enabled relic holders → leave.
+
+    Order matters: chest must be open before relics are visible/clickable;
+    proceed only enables once relics are claimed (or none available).
+    """
+    t = obs.get("treasure") or {}
+    if not t.get("chest_open"):
+        if verbose: print("[full-run]   treasure → open chest")
+        try:
+            c.treasure_open()
+        except StepError as e:
+            if verbose: print(f"[full-run]   treasure_open failed: {e.payload}")
+            time.sleep(0.3)
+        return
+
+    relics = t.get("relics") or []
+    enabled = [r for r in relics if r.get("is_enabled")]
+    if enabled:
+        pick = enabled[0]  # could rng.choice; first works fine for run-throughs
+        if verbose: print(f"[full-run]   treasure → pick relic idx={pick['idx']} id={pick.get('id')} ({pick.get('rarity')})")
+        try:
+            c.treasure_pick(pick["idx"])
+        except StepError as e:
+            if verbose: print(f"[full-run]   treasure_pick {pick['idx']} failed: {e.payload}")
+            time.sleep(0.3)
+        return
+
+    if t.get("can_proceed"):
+        if verbose: print("[full-run]   treasure → leave")
+        try:
+            c.treasure_leave()
+        except StepError as e:
+            if verbose: print(f"[full-run]   treasure_leave failed: {e.payload}")
+            time.sleep(0.3)
+        return
+
+    # No enabled relics and proceed not yet enabled — wait for animations.
+    time.sleep(0.3)
 
 
 def _do_relic_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:

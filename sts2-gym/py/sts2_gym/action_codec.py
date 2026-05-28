@@ -101,6 +101,12 @@ def to_text(action: dict[str, Any], context: dict[str, Any] | None = None) -> st
         return f"relic pick {action.get('idx', '?')}"
     if t == "bundle_pick":
         return f"bundle pick {action.get('idx', '?')}"
+    if t == "treasure_open":
+        return "treasure open"
+    if t == "treasure_pick":
+        return f"treasure pick {action.get('idx', '?')}"
+    if t == "treasure_leave":
+        return "treasure leave"
     if t == "noop":
         return "noop"
     return f"<{t} {action}>"
@@ -176,6 +182,10 @@ _register(r"relic\s+pick\s+(?P<i>\d+)",
           lambda m: {"type": "relic_pick", "idx": int(m["i"])})
 _register(r"bundle\s+pick\s+(?P<i>\d+)",
           lambda m: {"type": "bundle_pick", "idx": int(m["i"])})
+_register(r"treasure\s+open", lambda m: {"type": "treasure_open"})
+_register(r"treasure\s+leave", lambda m: {"type": "treasure_leave"})
+_register(r"treasure\s+pick\s+(?P<i>\d+)",
+          lambda m: {"type": "treasure_pick", "idx": int(m["i"])})
 _register(r"noop", lambda m: {"type": "noop"})
 
 

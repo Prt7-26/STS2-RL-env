@@ -216,11 +216,37 @@ internal static class HttpBridge
             else if (phase == "relic_select") AppendRelicSelectJson(sb);
             else if (phase == "card_reward_select") AppendCardRewardSelectJson(sb);
             else if (phase == "bundle_select") AppendBundleSelectJson(sb);
+            else if (phase == "treasure") AppendTreasureJson(sb);
         }
         catch (Exception ex)
         {
             Log.Warn($"{Tag} AppendNonCombatJson failed: {ex.Message}");
         }
+    }
+
+    private static void AppendTreasureJson(StringBuilder sb)
+    {
+        // Day-14 hotfix: NTreasureRoom flow per AutoSlay's TreasureRoomHandler.cs:
+        //   1) Click the chest (NButton "%Chest" inside NTreasureRoom) — sets
+        //      _hasChestBeenOpened=true and reveals NTreasureRoomRelicHolder[] .
+        //   2) Click each enabled NTreasureRoomRelicHolder to claim relics.
+        //   3) Click NProceedButton to leave.
+        var info = NonCombatHandlers.PeekTreasure();
+        sb.Append(",\"treasure\":{");
+        sb.Append("\"chest_open\":").Append(info.ChestOpen ? "true" : "false");
+        sb.Append(",\"can_proceed\":").Append(info.CanProceed ? "true" : "false");
+        sb.Append(",\"relics\":[");
+        for (int i = 0; i < info.Holders.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var h = info.Holders[i];
+            sb.Append("{\"idx\":").Append(i)
+              .Append(",\"is_enabled\":").Append(h.IsEnabled ? "true" : "false")
+              .Append(",\"id\":").Append(JsonEncodedString(h.RelicId ?? ""))
+              .Append(",\"rarity\":").Append(JsonEncodedString(h.Rarity ?? ""))
+              .Append('}');
+        }
+        sb.Append("]}");
     }
 
     private static void AppendBundleSelectJson(StringBuilder sb)
