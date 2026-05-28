@@ -91,6 +91,13 @@ internal static class NonCombatHandlers
                 $"\"requested\":[{col},{row}],\"legal\":[{legal}]}}");
         }
 
+        // Day-14.7: log per-segment timing. SPEED7 attributed 15s / 16 map steps
+        // (~940ms each) to the agent's map phase — but in Instant most of that
+        // ought to be the agent's choose_map_node round-trip, which is
+        // dominated by either EnterMapCoord (the full StartCombat → StartTurn
+        // chain) or the trailing BecameEmpty drain. Logging breakdown so we
+        // can see which one to attack next.
+        var tEnter = DateTime.UtcNow;
         try
         {
             Log.Info($"{Tag} EnterMapCoord [{col},{row}] (point_type={target.PointType})");
@@ -102,16 +109,26 @@ internal static class NonCombatHandlers
             return (500, "{\"ok\":false,\"error\":\"EnterMapCoord threw\",\"message\":" + JsonStr(ex.Message) +
                 ",\"stack\":" + JsonStr(ex.StackTrace ?? "") + "}");
         }
+        var tAfterEnter = DateTime.UtcNow;
 
         // Wait briefly for the new room to come up.
         await FastDelay.Of(200);
+        var tAfterDelay = DateTime.UtcNow;
         var aqs = RunManager.Instance.ActionQueueSet;
         if (aqs != null)
         {
             try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(10)); }
             catch (TimeoutException) { /* best effort */ }
         }
+        var tAfterDrain = DateTime.UtcNow;
         HttpBridge.RefreshObservation();
+        var tAfterRefresh = DateTime.UtcNow;
+
+        Log.Info($"{Tag} choose_map_node timings (ms): enter={(int)(tAfterEnter-tEnter).TotalMilliseconds} " +
+                 $"delay={(int)(tAfterDelay-tAfterEnter).TotalMilliseconds} " +
+                 $"drain={(int)(tAfterDrain-tAfterDelay).TotalMilliseconds} " +
+                 $"refresh={(int)(tAfterRefresh-tAfterDrain).TotalMilliseconds} " +
+                 $"total={(int)(tAfterRefresh-tEnter).TotalMilliseconds} point_type={target.PointType}");
 
         return (200, $"{{\"ok\":true,\"action\":\"choose_map_node\",\"col\":{col},\"row\":{row}," +
             $"\"point_type\":{JsonStr(target.PointType.ToString())}}}");
