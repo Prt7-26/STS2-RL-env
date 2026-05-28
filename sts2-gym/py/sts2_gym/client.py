@@ -203,17 +203,31 @@ class ModBridgeClient:
         """
         return self._get_json("/action_mask")
 
-    def step(self, action: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
+    def step(self, action: dict[str, Any], timeout: float = 30.0,
+             with_obs: bool = False, partial: bool = False) -> dict[str, Any]:
         """POST an action to /step, await completion, return the response.
 
         Day-5 supported action types:
             {"type": "play_card", "card_idx": int, "target_combat_id": int|None}
             {"type": "end_turn"}
 
+        ``with_obs=True`` (Day-14.10) asks the mod to inline the post-step
+        observation under the ``"obs"`` key of the response — saves the agent
+        a separate /observe round-trip on the next iteration. The inlined obs
+        already includes ``action_mask`` (mirrors /observe?with_mask=1).
+
         Raises StepError on 4xx/5xx with the server's structured error payload
         (e.g. unplayable_reason, target_combat_id not found).
         """
-        return self._post_json("/step", action, timeout=timeout)
+        path = "/step"
+        params: list[str] = []
+        if with_obs:
+            params.append("with_obs=1")
+        if partial:
+            params.append("partial=1")
+        if params:
+            path = path + "?" + "&".join(params)
+        return self._post_json(path, action, timeout=timeout)
 
     # ---------- Day-9.1 selector toggle ----------
 
