@@ -316,7 +316,7 @@ public static class Sts2GymMod
     {
         try
         {
-            await System.Threading.Tasks.Task.Delay(delayMs);
+            await FastDelay.Of(delayMs);
             HttpBridge.RefreshObservation();
         }
         catch (Exception ex) { Log.Warn($"{LogTag} ScheduleDelayedRefreshAsync: {ex.Message}"); }

@@ -153,7 +153,7 @@ def run_one_full_run(
                 _do_selector_step(c, obs, rng, verbose=verbose)
             elif effective == "combat":
                 if not _do_combat_step(c, obs, rng, verbose=verbose):
-                    time.sleep(0.2)
+                    time.sleep(0.05)  # Day-14: was 0.2; enemy-turn settles fast in Instant
             elif effective == "map":
                 _do_map_step(c, obs, rng, verbose=verbose)
             elif effective == "event":
@@ -177,7 +177,7 @@ def run_one_full_run(
                 summary["stopped"] = "game_over"
                 break
             elif effective in ("combat_pending", "between_rooms"):
-                time.sleep(0.3)  # wait for transition
+                time.sleep(0.08)  # Day-14: was 0.3; Instant transitions complete in <1 frame
             else:
                 consecutive_unknown += 1
                 if verbose:
@@ -185,7 +185,7 @@ def run_one_full_run(
                 if consecutive_unknown >= 10:
                     summary["stopped"] = f"unhandled phase {effective!r} ×10 — Day-10.B needed (shop/rest/etc.)"
                     break
-                time.sleep(0.5)
+                time.sleep(0.1)
                 continue
             consecutive_unknown = 0
         except StepError as e:
@@ -194,7 +194,7 @@ def run_one_full_run(
             if len(summary["errors"]) >= 5:
                 summary["stopped"] = "too many step errors"
                 break
-            time.sleep(0.5)
+            time.sleep(0.1)
     else:
         summary["stopped"] = "max_steps"
 
@@ -227,7 +227,7 @@ def _do_combat_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random,
 def _do_map_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
     reachable = (obs.get("map") or {}).get("reachable") or []
     if not reachable:
-        time.sleep(0.3)
+        time.sleep(0.08)
         return
     pick = rng.choice(reachable)
     if verbose: print(f"[full-run]   map → [{pick['col']},{pick['row']}] {pick['point_type']}")
@@ -247,13 +247,13 @@ def _do_event_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, 
         return
     if not options:
         if verbose: print("[full-run]   event → no options yet; waiting")
-        time.sleep(0.3)
+        time.sleep(0.08)
         return
     # Filter out options that the engine has already marked as chosen (locked).
     available = [o for o in options if not o.get("was_chosen") and not o.get("is_locked")]
     if not available:
         if verbose: print(f"[full-run]   event → all {len(options)} options chosen/locked; waiting")
-        time.sleep(0.3)
+        time.sleep(0.08)
         return
     pick = rng.choice(available)
     if verbose:
@@ -271,6 +271,11 @@ def _do_event_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, 
 _reward_empty_strikes = {"count": 0}  # module-level: consecutive empty observations
 _reward_stuck_tries: dict[int, int] = {}  # idx → consecutive attempts (skip after N)
 _REWARD_STUCK_LIMIT = 3
+_REWARD_EMPTY_LIMIT = 2  # Day-14 speed-tune: was 5. Under FastMode.Instant the
+                        # CombatEnded → NRewardsScreen push race window is < 1
+                        # frame. 5 × 200ms wall-clock was burning ~1s per
+                        # reward screen for nothing.
+_REWARD_EMPTY_SLEEP = 0.05  # 200ms -> 50ms; Instant-mode animations are 0
 _reward_skipped_idx: set[int] = set()  # idx we've given up on this reward screen
 
 
@@ -310,16 +315,16 @@ def _do_reward_step(c: ModBridgeClient, obs: dict[str, Any] | None = None, *, ve
     # Empty items list — could be transient (screen still loading) or real
     # (everything claimed). Wait a few polls to disambiguate.
     _reward_empty_strikes["count"] += 1
-    if _reward_empty_strikes["count"] < 5:
-        if verbose: print(f"[full-run]   reward → empty items (strike {_reward_empty_strikes['count']}/5); waiting for populate")
-        time.sleep(0.2)
+    if _reward_empty_strikes["count"] < _REWARD_EMPTY_LIMIT:
+        if verbose: print(f"[full-run]   reward → empty items (strike {_reward_empty_strikes['count']}/{_REWARD_EMPTY_LIMIT}); waiting for populate")
+        time.sleep(_REWARD_EMPTY_SLEEP)
         return
-    # 5× empty — really nothing left. Leave. Reset the per-screen stuck-skip
-    # set so the next reward screen starts fresh.
+    # Confirmed empty — leave. Reset the per-screen stuck-skip set so the next
+    # reward screen starts fresh.
     _reward_empty_strikes["count"] = 0
     _reward_skipped_idx.clear()
     _reward_stuck_tries.clear()
-    if verbose: print(f"[full-run]   reward → leave (confirmed empty after 5 polls)")
+    if verbose: print(f"[full-run]   reward → leave (confirmed empty after {_REWARD_EMPTY_LIMIT} polls)")
     c.leave_reward_screen()
 
 
@@ -329,7 +334,7 @@ def _do_card_reward_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: ra
     cards = crs.get("cards") or []
     if not cards:
         if verbose: print("[full-run]   card_reward_select → no cards yet; waiting")
-        time.sleep(0.3)
+        time.sleep(0.08)
         return
     pick = rng.choice(cards)
     if verbose:
@@ -357,7 +362,7 @@ def _do_bundle_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.
     bs = obs.get("bundle_select") or {}
     bundles = bs.get("bundles") or []
     if not bundles:
-        time.sleep(0.3)
+        time.sleep(0.08)
         return
     pick = rng.choice(bundles)
     if verbose:
@@ -379,7 +384,7 @@ def _do_treasure_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Rando
             c.treasure_open()
         except StepError as e:
             if verbose: print(f"[full-run]   treasure_open failed: {e.payload}")
-            time.sleep(0.3)
+            time.sleep(0.08)
         return
 
     relics = t.get("relics") or []
@@ -391,7 +396,7 @@ def _do_treasure_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Rando
             c.treasure_pick(pick["idx"])
         except StepError as e:
             if verbose: print(f"[full-run]   treasure_pick {pick['idx']} failed: {e.payload}")
-            time.sleep(0.3)
+            time.sleep(0.08)
         return
 
     if t.get("can_proceed"):
@@ -400,11 +405,11 @@ def _do_treasure_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Rando
             c.treasure_leave()
         except StepError as e:
             if verbose: print(f"[full-run]   treasure_leave failed: {e.payload}")
-            time.sleep(0.3)
+            time.sleep(0.08)
         return
 
     # No enabled relics and proceed not yet enabled — wait for animations.
-    time.sleep(0.3)
+    time.sleep(0.08)
 
 
 def _do_relic_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
@@ -412,7 +417,7 @@ def _do_relic_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.R
     items = (obs.get("relic_select") or {}).get("items") or []
     enabled = [it for it in items if it.get("is_enabled")]
     if not enabled:
-        time.sleep(0.3)
+        time.sleep(0.08)
         return
     pick = rng.choice(enabled)
     if verbose: print(f"[full-run]   relic_select → pick idx={pick['idx']}")
@@ -432,7 +437,7 @@ def _do_rest_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *
         except StepError as e:
             # Button not yet enabled (e.g. SMITH still resolving). Wait + retry.
             if verbose: print(f"[full-run]   rest_leave 409 ({e.payload.get('error')}); waiting")
-            time.sleep(0.3)
+            time.sleep(0.08)
         return
     pick = rng.choice(enabled)
     if verbose: print(f"[full-run]   rest → option_idx={pick['option_idx']} ({pick.get('option_id')})")
@@ -450,7 +455,7 @@ def _do_game_over_step(c: ModBridgeClient, *, verbose: bool) -> None:
         except StepError as e:
             if verbose: print(f"[full-run]   game_over proceed errored: {e.payload}")
             break
-        time.sleep(0.5)
+        time.sleep(0.1)
         try:
             phase = c.observe().get("phase")
         except Exception:

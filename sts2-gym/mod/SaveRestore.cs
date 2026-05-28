@@ -156,7 +156,7 @@ internal static class SaveRestore
             await NGame.Instance.LoadRun(runState, save.PreFinishedRoom);
 
             // Brief settle so NRun + Act preload finish before we report state.
-            await Task.Delay(200);
+            await FastDelay.Of(200);
             HttpBridge.RefreshObservation();
 
             var curRoom = runState.CurrentRoom?.RoomType.ToString() ?? "unknown";

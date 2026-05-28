@@ -104,7 +104,7 @@ internal static class NonCombatHandlers
         }
 
         // Wait briefly for the new room to come up.
-        await Task.Delay(200);
+        await FastDelay.Of(200);
         var aqs = RunManager.Instance.ActionQueueSet;
         if (aqs != null)
         {
@@ -156,7 +156,7 @@ internal static class NonCombatHandlers
                 proceedBtn = UiHelper.FindAll<NEventOptionButton>(roomNode)
                     .FirstOrDefault(b => b.Option != null && b.Option.IsProceed && !b.Option.IsLocked);
                 if (proceedBtn != null) break;
-                await Task.Delay(100);
+                await FastDelay.Of(100);
             }
             if (proceedBtn == null)
                 return (500, "{\"ok\":false,\"error\":\"no PROCEED NEventOptionButton found on finished event\"}");
@@ -166,7 +166,7 @@ internal static class NonCombatHandlers
             {
                 return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
             }
-            await Task.Delay(500);
+            await FastDelay.Of(500);
             HttpBridge.RefreshObservation();
             return (200, $"{{\"ok\":true,\"action\":\"choose_event_option\",\"proceeded_finished_event\":true,\"event_id\":{JsonStr(evt.Id.Entry)}}}");
         }
@@ -215,7 +215,7 @@ internal static class NonCombatHandlers
         {
             Log.Warn($"{Tag} option.Chosen async error: {ex.Message}");
         }
-        await Task.Delay(200);
+        await FastDelay.Of(200);
         HttpBridge.RefreshObservation();
 
         return (200, $"{{\"ok\":true,\"action\":\"choose_event_option\",\"option_idx\":{idx}," +
@@ -268,9 +268,9 @@ internal static class NonCombatHandlers
         {
             var top = NOverlayStack.Instance?.Peek();
             if (top is not NCardRewardSelectionScreen) break;
-            await Task.Delay(80);
+            await FastDelay.Of(80);
         }
-        await Task.Delay(200);
+        await FastDelay.Of(200);
         var aqs = RunManager.Instance.ActionQueueSet;
         if (aqs != null)
         {
@@ -327,13 +327,13 @@ internal static class NonCombatHandlers
         var settleDeadline = DateTime.UtcNow.AddSeconds(2.5);
         while (DateTime.UtcNow < settleDeadline)
         {
-            await Task.Delay(100);
+            await FastDelay.Of(100);
             // Bail early when the relic-select screen is no longer on top.
             var top = NOverlayStack.Instance?.Peek();
             if (top is not MegaCrit.Sts2.Core.Nodes.Screens.NChooseARelicSelection)
             {
                 // Continue waiting a little for downstream chain.
-                await Task.Delay(400);
+                await FastDelay.Of(400);
                 break;
             }
         }
@@ -389,7 +389,7 @@ internal static class NonCombatHandlers
         // Card-reward picks open a sub-screen routed through ICardSelector. Wait
         // briefly so the agent's next /observe sees either selector_active or
         // the post-claim state. Gold/potion claims apply immediately.
-        await Task.Delay(300);
+        await FastDelay.Of(300);
         HttpBridge.RefreshObservation();
         return (200, $"{{\"ok\":true,\"action\":\"take_reward_item\",\"idx\":{idx}," +
             $"\"reward_type\":{JsonStr(btn.Reward?.GetType().Name)}," +
@@ -418,7 +418,7 @@ internal static class NonCombatHandlers
             var enableDeadline = DateTime.UtcNow.AddSeconds(2);
             while (DateTime.UtcNow < enableDeadline && !proceed.IsEnabled)
             {
-                await Task.Delay(100);
+                await FastDelay.Of(100);
             }
             enabled = proceed.IsEnabled;
             Log.Info($"{Tag} reward proceed button after settle: IsEnabled={enabled}");
@@ -446,7 +446,7 @@ internal static class NonCombatHandlers
             if (top != screen) break;
             if (NMapScreen.Instance?.IsOpen == true) break;
             if (!RunManager.Instance.IsInProgress) break;
-            await Task.Delay(80);
+            await FastDelay.Of(80);
         }
 
         // Day-10.K: only force-Remove if all reward buttons are gone. Otherwise
@@ -467,7 +467,7 @@ internal static class NonCombatHandlers
             }
             Log.Warn($"{Tag} reward screen still on top (no claimable items) — forcing Remove");
             try { NOverlayStack.Instance.Remove(screen); } catch { /* best effort */ }
-            await Task.Delay(300);
+            await FastDelay.Of(300);
         }
 
         HttpBridge.RefreshObservation();
@@ -497,13 +497,13 @@ internal static class NonCombatHandlers
         {
             // Wait for it to become enabled (animations may delay it).
             while (DateTime.UtcNow < deadline && !contBtn.IsEnabled)
-                await Task.Delay(100);
+                await FastDelay.Of(100);
             if (contBtn.IsEnabled)
             {
                 Log.Info($"{Tag} clicking NGameOverContinueButton");
                 try { await UiHelper.Click(contBtn); clicked.Add("continue"); }
                 catch (Exception ex) { Log.Warn($"{Tag} continue click: {ex.Message}"); }
-                await Task.Delay(500);
+                await FastDelay.Of(500);
             }
         }
 
@@ -513,14 +513,14 @@ internal static class NonCombatHandlers
         {
             menuBtn = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NReturnToMainMenuButton>(screen);
             if (menuBtn != null && menuBtn.Visible && menuBtn.IsEnabled) break;
-            await Task.Delay(150);
+            await FastDelay.Of(150);
         }
         if (menuBtn != null && menuBtn.IsEnabled)
         {
             Log.Info($"{Tag} clicking NReturnToMainMenuButton");
             try { await UiHelper.Click(menuBtn); clicked.Add("main_menu"); }
             catch (Exception ex) { Log.Warn($"{Tag} main-menu click: {ex.Message}"); }
-            await Task.Delay(800);
+            await FastDelay.Of(800);
         }
         else
         {
@@ -609,7 +609,7 @@ internal static class NonCombatHandlers
                 catch (TimeoutException) { /* best effort */ }
             }
         }
-        await Task.Delay(150);
+        await FastDelay.Of(150);
         HttpBridge.RefreshObservation();
 
         return (200, $"{{\"ok\":true,\"action\":\"shop_buy\",\"entry_idx\":{idx},\"type\":{JsonStr(entry.GetType().Name)},\"cost\":{entry.Cost},\"finished\":{(finished ? "true" : "false")},\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
@@ -640,7 +640,7 @@ internal static class NonCombatHandlers
         {
             return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
-        await Task.Delay(300);
+        await FastDelay.Of(300);
         HttpBridge.RefreshObservation();
         return (200, "{\"ok\":true,\"action\":\"shop_leave\"}");
     }
@@ -707,7 +707,7 @@ internal static class NonCombatHandlers
         var settleDeadline = DateTime.UtcNow.AddSeconds(1.5);
         while (DateTime.UtcNow < settleDeadline)
         {
-            await Task.Delay(100);
+            await FastDelay.Of(100);
             if (Sts2GymMod.Selector.IsActive) break;
             // Room transitioned away (e.g. HEAL completed and went to map).
             var s2 = RunManager.Instance.DebugOnlyGetState();
@@ -720,7 +720,7 @@ internal static class NonCombatHandlers
             try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(3)); }
             catch (TimeoutException) { /* best effort */ }
         }
-        await Task.Delay(200);
+        await FastDelay.Of(200);
         HttpBridge.RefreshObservation();
 
         return (200, $"{{\"ok\":true,\"action\":\"rest_choose\",\"option_idx\":{idx},\"option_id\":{JsonStr(option.OptionId)},\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
@@ -762,7 +762,7 @@ internal static class NonCombatHandlers
         {
             return (500, "{\"ok\":false,\"error\":\"UiHelper.Click(hitbox) threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
-        await Task.Delay(400);
+        await FastDelay.Of(400);
 
         // Confirm step (separate button per AutoSlay pattern).
         var confirm = UiHelper.FindFirst<NConfirmButton>(screen);
@@ -781,9 +781,9 @@ internal static class NonCombatHandlers
         {
             var top = NOverlayStack.Instance?.Peek();
             if (top is not NChooseABundleSelectionScreen) break;
-            await Task.Delay(80);
+            await FastDelay.Of(80);
         }
-        await Task.Delay(300);
+        await FastDelay.Of(300);
         HttpBridge.RefreshObservation();
         return (200, $"{{\"ok\":true,\"action\":\"bundle_pick\",\"idx\":{idx}}}");
     }
@@ -813,7 +813,7 @@ internal static class NonCombatHandlers
         {
             return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
-        await Task.Delay(400);
+        await FastDelay.Of(400);
         HttpBridge.RefreshObservation();
         return (200, "{\"ok\":true,\"action\":\"rest_leave\"}");
     }
@@ -898,7 +898,7 @@ internal static class NonCombatHandlers
         }
 
         // Chest open animation + RelicCollection populate need a moment.
-        await Task.Delay(400);
+        await FastDelay.Of(400);
         HttpBridge.RefreshObservation();
         return (200, "{\"ok\":true,\"action\":\"treasure_open\"}");
     }
@@ -932,7 +932,7 @@ internal static class NonCombatHandlers
             return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
 
-        await Task.Delay(400);
+        await FastDelay.Of(400);
         HttpBridge.RefreshObservation();
         return (200, $"{{\"ok\":true,\"action\":\"treasure_pick\",\"idx\":{idx},\"relic_id\":{JsonStr(relicId)}}}");
     }
@@ -950,7 +950,7 @@ internal static class NonCombatHandlers
         // Wait briefly for proceed to enable (claim animations).
         var deadline = DateTime.UtcNow.AddSeconds(2);
         while (DateTime.UtcNow < deadline && !proceed.IsEnabled)
-            await Task.Delay(80);
+            await FastDelay.Of(80);
 
         if (!proceed.IsEnabled)
             return (409, "{\"ok\":false,\"error\":\"proceed button not enabled — claim or skip remaining relics first\"}");
@@ -961,7 +961,7 @@ internal static class NonCombatHandlers
             return (500, "{\"ok\":false,\"error\":\"UiHelper.Click threw\",\"message\":" + JsonStr(ex.Message) + "}");
         }
 
-        await Task.Delay(300);
+        await FastDelay.Of(300);
         HttpBridge.RefreshObservation();
         return (200, "{\"ok\":true,\"action\":\"treasure_leave\"}");
     }

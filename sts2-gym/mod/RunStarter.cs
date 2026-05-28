@@ -119,7 +119,7 @@ internal static class RunStarter
             Log.Info($"{Tag} StartNewSingleplayerRun done: character={character.Id.Entry} ascension={ascension} seed={seed}");
 
             // Brief settle for NRun + Act 0 transition.
-            await Task.Delay(200);
+            await FastDelay.Of(200);
             HttpBridge.RefreshObservation();
 
             var state = RunManager.Instance.DebugOnlyGetState();
