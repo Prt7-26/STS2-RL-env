@@ -193,6 +193,43 @@ class ModBridgeClient:
             payload["seed"] = seed
         return self._post_json("/start_run", payload, timeout=30.0)
 
+    # ---------- Day-13 Save / Restore ----------
+
+    def save_run(self) -> dict[str, Any]:
+        """Snapshot the current run as a SerializableRun JSON document.
+
+        Returns a dict::
+
+            {
+                "ok": True,
+                "schema_version": <int>,
+                "ascension": <int>,
+                "current_act_index": <int>,
+                "rng_streams": <int>,
+                "deck_size": <int>,
+                "hp": <int>,
+                "save": { ...SerializableRun JSON... },
+            }
+
+        Pass the ``save`` value back to :meth:`restore_run` to reload.
+
+        Errors
+        ------
+        409 if no run is in progress, or if a combat round is currently active —
+            mid-combat state isn't captured by SerializableRun (dev plan §2.1
+            path (a) vs (b)). Save at room boundaries: map / event / reward /
+            shop / rest.
+        """
+        return self._get_json("/save_run")
+
+    def restore_run(self, save: dict[str, Any]) -> dict[str, Any]:
+        """Reload a previously :meth:`save_run`-snapshotted SerializableRun.
+
+        ``save`` is the ``"save"`` field from the :meth:`save_run` response.
+        Any in-progress run is cleaned up before loading.
+        """
+        return self._post_json("/restore_run", {"save": save}, timeout=30.0)
+
     # ---------- Day-9.3 registry ----------
 
     def registry(self) -> dict[str, Any]:

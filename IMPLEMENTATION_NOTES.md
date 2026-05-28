@@ -137,6 +137,13 @@ return new { ..., selector_active = Sts2GymMod.Selector.IsActive };
 | `rest` | `rest.options=[{option_idx,option_id,is_enabled}]` | `rest_choose{option_idx}` / `rest_leave` | rest_choose 走 `UiHelper.Click(NRestSiteButton)` |
 | `game_over` | `game_over.can_proceed` | `proceed_after_game_over` | 两 stage：`NGameOverContinueButton` → `NReturnToMainMenuButton` |
 
+Run-level endpoints（不绑特定 phase，整 run 任意 between-room 时刻可调）：
+
+| Endpoint | Method | 内容 | 实现细节 |
+|---|---|---|---|
+| `/save_run` | GET | 当前 run 的 `SerializableRun` JSON（18+ 顶层字段 + 全量 RNG state + Acts + 玩家 deck/HP/gold/relics + 地图） | `RunManager.ToSave(null)` + `JsonSerializationUtility.GetTypeInfo<SerializableRun>()`。中场（combat 进行中）返 409 — mid-combat state 不在 SerializableRun 里（dev plan §2.1 path (a) vs (b)） |
+| `/restore_run` | POST `{"save": <SerializableRun JSON>}` | 用提供的 save 替换当前 run | `CleanUp(graceful=false)` → `RunState.FromSerializable` → `SetUpSavedSinglePlayer` → `LoadRun`，对齐 `NMainMenu.OnContinueButtonPressedAsync` 的 Continue Run 路径 |
+
 ---
 
 ## 4. 已知 quirks（接手前必读）

@@ -967,10 +967,10 @@ P2 milestone 出**两类 offline dataset**：
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| P1 FastMode.Instant fix | ❌ | 已知 `NCreature.AnimDie` 内 `Node.MoveChild(null)` NRE，要 Harmony patch。**训练速度瓶颈**——现在 0.7-1.2 step/s |
+| P1 FastMode.Instant fix | ⚠️ | Day-13: `mod/Patches/NCreatureAnimDiePatch.cs` Harmony Prefix 在 Instant 模式下替换 AnimDie body，绕过 `parent.MoveChild(null,...)` NRE。Mod 开关已切到 `FastMode.Instant`。**待运行时验证**：step/s ≥ 50 目标 + Normal/Fast/Instant trajectory bit-exact 比对 |
 | P1 VectorEnv 验证 | ❌ | STS2 process singleton 约束，需要 Docker 或多机分布。1 周+ |
 | P1 Floor-level + Run-level injector | ✅ | Day-9.2 `start_run` + Day-10.A `choose_map_node` 已覆盖整 run 走通 |
-| P1 Save/Restore 端点 | ⚠️ | `/reset` 能恢复 player+rng snapshot（Day-6），但没有 task-style `/save_run` + `/restore_run` |
+| P1 Save/Restore 端点 | ✅ | Day-13: `GET /save_run` + `POST /restore_run`，复用 `RunManager.ToSave` + `RunState.FromSerializable` + `NGame.LoadRun` 的 Continue Run 路径。**仅 between-rooms**，mid-combat 返 409（path (b) `SerializableCombatState` 还没做）。客户端 `client.save_run() / restore_run(save)` + 验证脚本 `python -m sts2_gym.save_restore_test` |
 | P1 Ascension 缩放正确性 test | ❌ | 半天工作量 |
 | P2 系列 | ❌ | Docker / 多语言 / Offline 数据集——按 P0/P1 收尾后再说 |
 
@@ -992,11 +992,12 @@ P2 milestone 出**两类 offline dataset**：
 
 按 unblock 力度：
 
-1. **FastMode.Instant fix** — 当前最大瓶颈。0.7 step/s 让 RL 训练实际上做不了
-2. **Quickstart README** — 让外部用户能跑起来
-3. **Save/Restore endpoints** — MCTS / branching 解锁
+1. ~~**FastMode.Instant fix**~~ — Day-13 已 Harmony patch，待运行时验证
+2. ~~**Save/Restore endpoints**~~ — Day-13 已 ship `/save_run` + `/restore_run`（between-rooms only）
+3. **Schema 生成 + Quickstart README** — 让外部用户能跑起来；P0 收尾
 4. **Ascension scaling test** — 论文严谨性
-5. **VectorEnv** — 训练吞吐量（前 4 个解了再说）
+5. **VectorEnv** — 训练吞吐量（前 3 个解了再说）
+6. **Mid-combat save**（SerializableCombatState path (b)） — MCTS/branching 解锁深度
 
 ---
 

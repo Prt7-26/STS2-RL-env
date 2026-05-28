@@ -704,6 +704,21 @@ internal static class HttpBridge
                 (status, body) = RunStarter.HandleStartRunAsync(ctx).GetAwaiter().GetResult();
                 break;
 
+            case "/save_run":
+                // GET only. Returns the current run as a JSON-serialized
+                // SerializableRun, recoverable via POST /restore_run.
+                if (method != "GET") { status = 405; body = "{\"ok\":false,\"error\":\"GET only\"}"; break; }
+                (status, body) = SaveRestore.HandleSave();
+                break;
+
+            case "/restore_run":
+                // POST { "save": <SerializableRun JSON> }. CleanUp the current
+                // run (if any) and load the supplied save, like the Continue Run
+                // button in the main menu.
+                if (method != "POST") { status = 405; body = "{\"ok\":false,\"error\":\"POST only\"}"; break; }
+                (status, body) = SaveRestore.HandleRestoreAsync(ctx).GetAwaiter().GetResult();
+                break;
+
             case "/registry":
                 // Day-9.3: dump card/monster id → int mappings for stable obs encoding.
                 // Includes content_hash + game_version so the py side can detect
