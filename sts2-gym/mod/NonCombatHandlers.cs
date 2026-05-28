@@ -204,7 +204,7 @@ internal static class NonCombatHandlers
         bool finished = false;
         try
         {
-            await chosenTask.WaitAsync(TimeSpan.FromSeconds(1.5));
+            await chosenTask.WaitAsync(FastDelay.TimeoutOf(1500));
             finished = true;
         }
         catch (TimeoutException)
@@ -590,7 +590,7 @@ internal static class NonCombatHandlers
         bool success = true;
         try
         {
-            await purchaseTask.WaitAsync(TimeSpan.FromSeconds(1.5));
+            await purchaseTask.WaitAsync(FastDelay.TimeoutOf(1500));
             finished = true;
             success = purchaseTask.Result;
         }

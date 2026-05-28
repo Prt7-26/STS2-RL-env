@@ -43,4 +43,31 @@ internal static class FastDelay
 
     /// <summary>``await Task.Delay(Scale(ms))`` — drop-in replacement.</summary>
     public static Task Of(int ms) => Task.Delay(Scale(ms));
+
+    /// <summary>
+    /// Scale a ``WaitAsync(timeout)`` budget by FastMode. Used for "wait for a
+    /// task to either complete OR signal that a sub-screen is in play".
+    /// Instant collapses the budget to ~1/5 of the original because the
+    /// in-progress task either completes within a frame or two (real fast
+    /// path) or never completes synchronously (opened a sub-screen — agent
+    /// must drive next). Burning the original 1.5s waiting on the latter is
+    /// pure wall-clock waste.
+    ///
+    ///     Normal  | Fast | Instant
+    ///     --------+------+--------
+    ///     full ms | ms/2 | clamp(ms / 5, 200, 500)
+    /// </summary>
+    public static TimeSpan TimeoutOf(int ms)
+    {
+        FastModeType mode;
+        try { mode = SaveManager.Instance?.PrefsSave?.FastMode ?? FastModeType.Normal; }
+        catch { return TimeSpan.FromMilliseconds(ms); }
+        int scaled = mode switch
+        {
+            FastModeType.Instant => Math.Clamp(ms / 5, 200, 500),
+            FastModeType.Fast    => ms / 2,
+            _                    => ms,
+        };
+        return TimeSpan.FromMilliseconds(scaled);
+    }
 }
