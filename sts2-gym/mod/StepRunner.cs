@@ -12,6 +12,8 @@ using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Settings;
 
 namespace Sts2Gym;
 
@@ -320,7 +322,7 @@ internal static class StepRunner
         {
             if (Sts2GymMod.Selector.IsActive) break;
             if (becameEmpty == null || becameEmpty.IsCompleted) break;
-            await Task.Delay(50);
+            await Task.Delay(FastDelay.Scale(50));
         }
         if (DateTime.UtcNow >= deadline && becameEmpty != null && !becameEmpty.IsCompleted && !Sts2GymMod.Selector.IsActive)
         {
@@ -337,7 +339,18 @@ internal static class StepRunner
         // Skip this if a selector is active — we'll be back here after it resolves.
         if (!selectorActive && CombatManager.Instance.IsInProgress)
         {
-            var killDeadline = DateTime.UtcNow.AddMilliseconds(400);
+            // Day-14 speed-tune: 400ms is paranoid for Instant mode where the
+            // CombatEnded transition fires within 1-2 frames.
+            //   Instant -> 100ms  (was burning 200-400ms x 5 kills = ~1-2s per run)
+            //   Fast    -> 200ms
+            //   Normal  -> 400ms
+            int graceMs = SaveManager.Instance?.PrefsSave?.FastMode switch
+            {
+                FastModeType.Instant => 100,
+                FastModeType.Fast    => 200,
+                _                    => 400,
+            };
+            var killDeadline = DateTime.UtcNow.AddMilliseconds(graceMs);
             while (CombatManager.Instance.IsInProgress && DateTime.UtcNow < killDeadline)
             {
                 // If no live hittable enemies remain, give the engine time to fire
@@ -345,7 +358,7 @@ internal static class StepRunner
                 // there's nothing to wait for — return immediately.
                 var c = CombatManager.Instance.DebugOnlyGetState();
                 if (c != null && c.HittableEnemies.Count > 0) break;
-                await Task.Delay(50);
+                await Task.Delay(FastDelay.Scale(50));
             }
         }
 
@@ -436,14 +449,14 @@ internal static class StepRunner
                && !Sts2GymMod.Selector.IsActive
                && DateTime.UtcNow < pollDeadline)
         {
-            await Task.Delay(50);
+            await Task.Delay(FastDelay.Scale(50));
         }
         while (CombatManager.Instance.IsInProgress
                && !CombatManager.Instance.IsPlayPhase
                && !Sts2GymMod.Selector.IsActive
                && DateTime.UtcNow < pollDeadline)
         {
-            await Task.Delay(50);
+            await Task.Delay(FastDelay.Scale(50));
         }
         // Also drain anything left in the queue (e.g. end-of-turn power animations).
         var aqs = RunManager.Instance.ActionQueueSet;
