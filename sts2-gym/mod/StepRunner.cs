@@ -102,7 +102,7 @@ internal static class StepRunner
             "choose_map_node" => await NonCombatHandlers.ChooseMapNodeAsync(cmd),
             "choose_event_option" => await NonCombatHandlers.ChooseEventOptionAsync(cmd),
             "take_reward_item" => await NonCombatHandlers.TakeRewardItemAsync(cmd),
-            "leave_reward_screen" => await NonCombatHandlers.LeaveRewardScreenAsync(),
+            "leave_reward_screen" => await NonCombatHandlers.LeaveRewardScreenAsync(cmd),
             "proceed_after_game_over" => await NonCombatHandlers.ProceedGameOverAsync(),
             // Day-10.B: shop + rest.
             "shop_buy" => await NonCombatHandlers.ShopBuyAsync(cmd),

@@ -331,11 +331,18 @@ class ModBridgeClient:
         (selector_active=true follows — resolve via select_pick / select_skip)."""
         return self._post_json("/step", {"type": "take_reward_item", "idx": idx}, timeout=15.0)
 
-    def leave_reward_screen(self) -> dict[str, Any]:
+    def leave_reward_screen(self, force: bool = False) -> dict[str, Any]:
         """Click the post-combat reward screen's proceed button. Take any
         gold/potion/relic via take_reward_item first; card picks already
-        route through ICardSelector (Day-8)."""
-        return self._post_json("/step", {"type": "leave_reward_screen"}, timeout=15.0)
+        route through ICardSelector (Day-8).
+
+        ``force=True`` bypasses the "unclaimed items remaining" guard — used
+        by the agent when it's tried to claim an item and the mod silently
+        no-op'd (e.g. PotionReward when all 3 potion slots are full)."""
+        payload: dict[str, Any] = {"type": "leave_reward_screen"}
+        if force:
+            payload["force"] = True
+        return self._post_json("/step", payload, timeout=15.0)
 
     def proceed_after_game_over(self) -> dict[str, Any]:
         """Dismiss the game-over screen (returns to main menu)."""

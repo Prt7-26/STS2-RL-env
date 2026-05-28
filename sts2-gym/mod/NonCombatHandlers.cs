@@ -396,8 +396,17 @@ internal static class NonCombatHandlers
             $"\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
     }
 
-    public static async Task<(int, string)> LeaveRewardScreenAsync()
+    public static async Task<(int, string)> LeaveRewardScreenAsync(JsonElement? cmd = null)
     {
+        // Day-14.5: opt-in force flag. When the agent has tried + failed to
+        // claim a reward (e.g. potion when all 3 slots full — NRewardButton.
+        // IsEnabled stays true but click no-ops), it marks the idx unclaimable
+        // and calls leave_reward_screen with force=true. Mod then bypasses the
+        // "remaining items" guard and force-Removes the screen.
+        bool force = false;
+        if (cmd.HasValue && cmd.Value.TryGetProperty("force", out var f) && f.ValueKind == JsonValueKind.True)
+            force = true;
+
         var overlay = NOverlayStack.Instance?.Peek();
         var screen = overlay as NRewardsScreen;
         if (screen == null)
@@ -408,7 +417,7 @@ internal static class NonCombatHandlers
             return (500, "{\"ok\":false,\"error\":\"no proceed button found on reward screen\"}");
 
         var enabled = proceed.IsEnabled;
-        Log.Info($"{Tag} reward proceed button: IsEnabled={enabled}");
+        Log.Info($"{Tag} reward proceed button: IsEnabled={enabled} force={force}");
 
         if (!enabled)
         {
@@ -426,6 +435,14 @@ internal static class NonCombatHandlers
 
         if (!enabled)
         {
+            if (force)
+            {
+                Log.Warn($"{Tag} proceed button disabled but force=true — bypassing via NOverlayStack.Remove");
+                try { NOverlayStack.Instance?.Remove(screen); } catch { /* best effort */ }
+                await FastDelay.Of(200);
+                HttpBridge.RefreshObservation();
+                return (200, "{\"ok\":true,\"action\":\"leave_reward_screen\",\"forced\":true}");
+            }
             return (409, "{\"ok\":false,\"error\":\"proceed button disabled — Hook.ShouldProceedToNextMapPoint may block leaving\"}");
         }
 
@@ -460,10 +477,14 @@ internal static class NonCombatHandlers
         {
             var remaining = UiHelper.FindAll<MegaCrit.Sts2.Core.Nodes.Rewards.NRewardButton>(screen)
                                     .Where(b => b.IsEnabled).Count();
-            if (remaining > 0)
+            if (remaining > 0 && !force)
             {
                 Log.Warn($"{Tag} reward screen still on top + {remaining} reward(s) still claimable — NOT force-removing");
-                return (409, $"{{\"ok\":false,\"error\":\"reward screen has {remaining} unclaimed items\",\"hint\":\"call /step take_reward_item first\"}}");
+                return (409, $"{{\"ok\":false,\"error\":\"reward screen has {remaining} unclaimed items\",\"hint\":\"call /step take_reward_item first, or retry with force=true to abandon them\",\"remaining\":{remaining}}}");
+            }
+            if (remaining > 0 && force)
+            {
+                Log.Warn($"{Tag} reward screen still on top + {remaining} unclaimable — force-removing per agent");
             }
             Log.Warn($"{Tag} reward screen still on top (no claimable items) — forcing Remove");
             try { NOverlayStack.Instance.Remove(screen); } catch { /* best effort */ }

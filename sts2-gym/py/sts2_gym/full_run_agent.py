@@ -332,13 +332,27 @@ def _do_reward_step(c: ModBridgeClient, obs: dict[str, Any] | None = None, *, ve
         if verbose: print(f"[full-run]   reward → empty items (strike {_reward_empty_strikes['count']}/{_REWARD_EMPTY_LIMIT}); waiting for populate")
         time.sleep(_REWARD_EMPTY_SLEEP)
         return
-    # Confirmed empty — leave. Reset the per-screen stuck-skip set so the next
-    # reward screen starts fresh.
+    # Confirmed empty — leave. If we had to give up on any idx as unclaimable,
+    # force-leave so the mod bypasses its "remaining items" / "proceed disabled"
+    # guards. Reset the per-screen stuck-skip set so the next reward screen
+    # starts fresh.
+    had_skipped = bool(_reward_skipped_idx)
     _reward_empty_strikes["count"] = 0
     _reward_skipped_idx.clear()
     _reward_stuck_tries.clear()
-    if verbose: print(f"[full-run]   reward → leave (confirmed empty after {_REWARD_EMPTY_LIMIT} polls)")
-    c.leave_reward_screen()
+    if verbose:
+        suffix = " (force=True; some items were unclaimable)" if had_skipped else ""
+        print(f"[full-run]   reward → leave (after {_REWARD_EMPTY_LIMIT} empty polls){suffix}")
+    try:
+        c.leave_reward_screen(force=had_skipped)
+    except StepError as e:
+        # Even with force, the mod might refuse if not on a reward screen any
+        # more (transient race). Treat 409 as advisory and let the outer loop
+        # re-observe.
+        if e.status == 409 and verbose:
+            print(f"[full-run]   leave_reward_screen → {e.status} {e.payload.get('error')}")
+        elif e.status != 409:
+            raise
 
 
 def _do_card_reward_select_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
