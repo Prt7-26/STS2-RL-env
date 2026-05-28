@@ -112,7 +112,10 @@ def run_one_full_run(
     while steps < max_steps:
         steps += 1
         try:
-            obs = c.observe()
+            # Day-14 speed-tune: ask for action_mask inline so combat/selector
+            # steps can read obs["action_mask"] instead of issuing a second HTTP
+            # call per loop iteration.
+            obs = c.observe(with_mask=True)
         except Exception as e:
             print(f"[full-run] ✗ /observe failed: {e}")
             summary["stopped"] = f"observe failed: {e!r}"
@@ -203,8 +206,18 @@ def run_one_full_run(
     return summary
 
 
+def _mask_from(obs: dict[str, Any], c: ModBridgeClient) -> dict[str, Any]:
+    """Day-14: prefer the inline action_mask in the obs payload (saved one HTTP
+    round-trip per step). Fall back to /action_mask if the mod didn't inline
+    it — e.g. when the caller passed with_mask=False or against an older mod."""
+    inline = obs.get("action_mask")
+    if inline is not None:
+        return inline
+    return c.action_mask()
+
+
 def _do_selector_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random, *, verbose: bool) -> None:
-    mask = c.action_mask()
+    mask = _mask_from(obs, c)
     a = _pick_random_action(mask, rng)
     if verbose: print(f"[full-run]   selector → {a.get('type')} {a.get('option_idx', '')}")
     c.step(a)
@@ -215,7 +228,7 @@ def _do_combat_step(c: ModBridgeClient, obs: dict[str, Any], rng: random.Random,
     combat = obs.get("combat") or {}
     if not combat.get("play_phase"):
         return False
-    mask = c.action_mask()
+    mask = _mask_from(obs, c)
     if not mask.get("play_phase") and not mask.get("selector_active"):
         return False
     a = _pick_random_action(mask, rng)

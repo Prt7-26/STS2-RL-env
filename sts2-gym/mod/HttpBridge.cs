@@ -64,6 +64,11 @@ internal static class HttpBridge
     private static volatile string _cachedFullObs = EmptyObservation;
     private static volatile string _cachedPartialObs = EmptyObservation;
     private static volatile string _cachedActionMask = EmptyActionMask;
+    // Day-14 speed-tune: pre-built "observation with inline action_mask" so
+    // /observe?with_mask=1 needs zero string-splicing on the hot path. Saves
+    // one HTTP round-trip per agent step.
+    private static volatile string _cachedFullObsWithMask = EmptyObservation;
+    private static volatile string _cachedPartialObsWithMask = EmptyObservation;
     private static long _lastSnapshotUtcMs;
 
     public static int Port { get; private set; }
@@ -110,6 +115,11 @@ internal static class HttpBridge
             _cachedFullObs = BuildObservation(partial: false);
             _cachedPartialObs = BuildObservation(partial: true);
             _cachedActionMask = BuildActionMask();
+            // Pre-splice "obs with action_mask inline" — single string concat
+            // at refresh time so /observe?with_mask=1 is the same hot path
+            // cost as plain /observe.
+            _cachedFullObsWithMask = InlineMask(_cachedFullObs, _cachedActionMask);
+            _cachedPartialObsWithMask = InlineMask(_cachedPartialObs, _cachedActionMask);
             _lastSnapshotUtcMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
         catch (Exception ex)
@@ -121,7 +131,17 @@ internal static class HttpBridge
             _cachedFullObs = err;
             _cachedPartialObs = err;
             _cachedActionMask = "{\"phase\":\"error\",\"actions\":[]}";
+            _cachedFullObsWithMask = err;
+            _cachedPartialObsWithMask = err;
         }
+    }
+
+    /// <summary>Splice ``,"action_mask":<mask>`` in just before the closing brace of obs.</summary>
+    private static string InlineMask(string obs, string mask)
+    {
+        if (string.IsNullOrEmpty(obs) || obs[obs.Length - 1] != '}') return obs;
+        var inner = obs.Substring(0, obs.Length - 1);
+        return inner + ",\"action_mask\":" + mask + "}";
     }
 
     private static int ResolvePort()
@@ -671,11 +691,21 @@ internal static class HttpBridge
                 break;
 
             case "/observe":
-                // ?partial=1 -> PartialObs view (dev plan §2.8: hides draw_pile contents, etc).
-                // No query / partial=0 -> FullInfo view.
+                // ?partial=1 -> PartialObs view (dev plan §2.8: hides draw_pile contents).
+                // ?with_mask=1 -> include action_mask inline as the "action_mask" key
+                //                 (Day-14 speed-tune: spares the client a separate /action_mask
+                //                 round-trip; cuts agent loop from 3 to 2 HTTP calls / step).
+                // No query -> FullInfo without mask, original shape preserved for backcompat.
                 var partialFlag = ctx.Request.QueryString["partial"];
                 bool partial = partialFlag == "1" || partialFlag == "true";
-                body = WithFreshAge(partial ? _cachedPartialObs : _cachedFullObs);
+                var maskFlag = ctx.Request.QueryString["with_mask"];
+                bool withMask = maskFlag == "1" || maskFlag == "true";
+                string cached;
+                if (withMask)
+                    cached = partial ? _cachedPartialObsWithMask : _cachedFullObsWithMask;
+                else
+                    cached = partial ? _cachedPartialObs : _cachedFullObs;
+                body = WithFreshAge(cached);
                 status = 200;
                 break;
 

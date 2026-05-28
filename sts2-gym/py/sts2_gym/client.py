@@ -16,13 +16,12 @@ without env-var fishing. For Day-3 single-instance we just default to 7777.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 DEFAULT_PORT = int(os.environ.get("STS2GYM_PORT", "7777"))
 DEFAULT_HOST = os.environ.get("STS2GYM_HOST", "127.0.0.1")
@@ -70,33 +69,81 @@ class ModBridgeClient:
         self.port = resolved_port
         self.timeout = timeout
         self.base = f"http://{host}:{resolved_port}"
+        # Day-14 speed-tune: lazy-init persistent HTTPConnection. Reusing TCP
+        # cuts ~10-30ms per call on macOS where urllib.urlopen reconnects
+        # every call. Bonus: http.client is unaffected by HTTP_PROXY env vars
+        # so a running ClashX / system proxy won't intercept localhost traffic.
+        self._conn: http.client.HTTPConnection | None = None
 
     # ---------- HTTP primitives ----------
 
+    def _get_conn(self) -> http.client.HTTPConnection:
+        if self._conn is None:
+            self._conn = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
+        return self._conn
+
+    def _request(self, method: str, path: str, *, body: bytes | None = None,
+                 content_type: str | None = None,
+                 timeout: float | None = None) -> tuple[int, bytes]:
+        """One HTTP round-trip on the persistent connection. Reconnects once on broken-pipe / timeout."""
+        # Apply timeout override per call.
+        effective_timeout = timeout if timeout is not None else self.timeout
+        for attempt in (0, 1):
+            conn = self._get_conn()
+            conn.timeout = effective_timeout
+            headers: dict[str, str] = {"Connection": "keep-alive"}
+            if content_type:
+                headers["Content-Type"] = content_type
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+                data = resp.read()
+                return resp.status, data
+            except (http.client.RemoteDisconnected, ConnectionResetError,
+                    BrokenPipeError, http.client.BadStatusLine, OSError) as e:
+                # Stale keep-alive socket — close + retry once.
+                try: conn.close()
+                except Exception: pass
+                self._conn = None
+                if attempt == 0:
+                    continue
+                raise
+        # unreachable
+        raise RuntimeError("retry loop exited without return")
+
     def _get_json(self, path: str) -> dict[str, Any]:
-        with urlopen(f"{self.base}{path}", timeout=self.timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
+        status, data = self._request("GET", path)
+        body = data.decode("utf-8")
+        if status >= 400:
+            try: err = json.loads(body)
+            except (json.JSONDecodeError, ValueError): err = {"raw": body}
+            raise StepError(status=status, payload=err)
+        return json.loads(body)
 
     def _post_json(self, path: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         """POST JSON, return parsed response. On non-2xx, raises StepError with parsed body."""
         body_bytes = json.dumps(payload).encode("utf-8")
-        req = Request(
-            f"{self.base}{path}",
-            data=body_bytes,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urlopen(req, timeout=timeout if timeout is not None else self.timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except HTTPError as e:
-            # Server returned 4xx/5xx — try to parse body and raise rich error.
-            err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
-            try:
-                err_json = json.loads(err_body)
-            except (json.JSONDecodeError, ValueError):
-                err_json = {"raw": err_body}
-            raise StepError(status=e.code, payload=err_json) from None
+        status, data = self._request("POST", path, body=body_bytes,
+                                     content_type="application/json", timeout=timeout)
+        body = data.decode("utf-8", errors="replace")
+        if status >= 400:
+            try: err = json.loads(body)
+            except (json.JSONDecodeError, ValueError): err = {"raw": body}
+            raise StepError(status=status, payload=err)
+        return json.loads(body)
+
+    def close(self) -> None:
+        """Close the persistent HTTP connection. Idempotent."""
+        if self._conn is not None:
+            try: self._conn.close()
+            except Exception: pass
+            self._conn = None
+
+    def __enter__(self) -> "ModBridgeClient":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
 
     # ---------- endpoint wrappers ----------
 
@@ -107,7 +154,7 @@ class ModBridgeClient:
     def version(self) -> dict[str, Any]:
         return self._get_json("/version")
 
-    def observe(self, partial: bool = False) -> dict[str, Any]:
+    def observe(self, partial: bool = False, with_mask: bool = False) -> dict[str, Any]:
         """Return the current state snapshot.
 
         Parameters
@@ -132,7 +179,14 @@ class ModBridgeClient:
             ``combat`` — full mid-combat extension (dev plan §2.1 path b)
                          when ``phase`` is combat-y, otherwise absent
         """
-        query = "?partial=1" if partial else ""
+        # Day-14 speed-tune: with_mask=True asks the mod to inline the cached
+        # action_mask under obs["action_mask"], so the caller can skip a
+        # separate /action_mask round-trip. The mod still serves /action_mask
+        # for back-compat.
+        params: list[str] = []
+        if partial: params.append("partial=1")
+        if with_mask: params.append("with_mask=1")
+        query = "?" + "&".join(params) if params else ""
         return self._get_json(f"/observe{query}")
 
     def action_mask(self) -> dict[str, Any]:
