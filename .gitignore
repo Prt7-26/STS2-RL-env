@@ -1,4 +1,7 @@
-# Reverse-engineering artifacts — local only, must not be pushed
+# Reverse-engineering artifacts — local only, must not be pushed.
+# This includes the recon notes under sts2-reverse/docs/ which contain
+# detailed mapping of the game's internal class structure.
+sts2-reverse/
 decompiled_dll/
 raw_pck/
 sts2.dll
@@ -6,6 +9,11 @@ sts2.dll
 GodotSharp.dll
 sts2.deps.json
 *.pck
+
+# Internal / personal-use docs not for public consumption
+STS2_GYM_STRATEGY.md   # author's own go-to-market strategy
+CLAUDE.md              # AI-agent project discipline; refers to legal redline
+                       # (the public README repeats the operational facts users need)
 
 # OS noise
 .DS_Store

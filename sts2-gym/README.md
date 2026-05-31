@@ -379,4 +379,4 @@ has 1) — this is the dev plan §6 process-isolation check.
 - **Single process = single env.** Each parallel env needs its own STS2 process; see VectorEnv above. Dev plan reference: [§2.7](../STS2_GYM_DEV_PLAN.md#27-实例生命周期).
 - **macOS path.** Mod must live at `<install>/SlayTheSpire2.app/Contents/MacOS/mods/sts2gym/`. The deploy script handles this.
 - **Game updates.** STS2 is in EA; new patches may break action / model IDs. `/registry` includes `content_hash` to detect drift.
-- **`decompiled_dll/` is local-only**, not pushed to any public repo (per legal redlines in [CLAUDE.md](../CLAUDE.md)).
+- **`decompiled_dll/` and the whole `sts2-reverse/` tree are local-only**, never pushed to any public repo. See the top-level [README §17.7](../README.md#177-不在公开仓库放反编译产物) for the legal redline.

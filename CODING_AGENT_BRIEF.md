@@ -49,17 +49,15 @@ python -m sts2_gym.full_run_agent --character IRONCLAD --verbose   # 整 run
 
 ```
 STS2env/
-├── CLAUDE.md                       # 给 Claude Code 的项目指南（必读）
 ├── CODING_AGENT_BRIEF.md           # 本文档
 ├── IMPLEMENTATION_NOTES.md         # 架构沉淀 + 调试 playbook（必读）
 ├── STS2_GYM_DEV_PLAN.md            # 项目北极星 + §12 实施进度
-├── STS2_GYM_STRATEGY.md            # 用户的对外推广战略（不需要 agent 参与）
 ├── README.md
-├── sts2-reverse/                   # 反编译产物 (gitignore)
-│   ├── decompiled_dll/             # 3369 个 .cs 文件，参考用
-│   ├── raw_pck/                    # 资源
+├── sts2-reverse/                   # 反编译产物 (gitignore，本地)
+│   ├── decompiled_dll/             # ILSpy 输出，参考用
+│   ├── raw_pck/                    # GDRE 资源
 │   ├── sts2.dll / 0Harmony.dll     # 给 mod 链接
-│   └── docs/recon/                 # 当初 4 个侦察任务的产出（仍可参考）
+│   └── docs/recon/                 # 侦察阶段笔记（local-only，不公开）
 └── sts2-gym/                       # ← 主要工作区
     ├── mod/                        # C# mod
     │   ├── Sts2GymMod.cs           # ModInitializer + 9 个 game event hooks
@@ -174,11 +172,11 @@ pkill -9 -f SlayTheSpire2
 ## 7. 推荐阅读顺序
 
 1. **本文档**（你在读）
-2. **[CLAUDE.md](CLAUDE.md)** — 项目协作纪律
+2. **[README.md](README.md) §6-§7** — 用户视角的 Python / HTTP API + 法律红线
 3. **[IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md) §1-§5** — 架构 + quirks + 调试
 4. **[STS2_GYM_DEV_PLAN.md](STS2_GYM_DEV_PLAN.md) §11 + §12** — 优先级表 + 实施进度
 5. **[sts2-gym/mod/NonCombatHandlers.cs](sts2-gym/mod/NonCombatHandlers.cs)** — 11 个 phase handler 的 reference impl
-6. 加新功能前看一遍 **AutoSlay** 的对应 Handler（`sts2-reverse/decompiled_dll/MegaCrit.Sts2.Core.AutoSlay.Handlers.*`），它的 click 流程通常就是正确的
+6. 加新功能前看一遍 **AutoSlay** 的对应 Handler（本地 `sts2-reverse/decompiled_dll/MegaCrit.Sts2.Core.AutoSlay.Handlers.*`，开发机才有），它的 click 流程通常就是正确的
 
 ---
 

@@ -69,7 +69,11 @@ sts2-reverse/
 └── decompiled_dll/       # 可选：ILSpy 反编译输出（开发时参考用）
 ```
 
-所有这些路径都在根目录 `.gitignore` 里，确保不会误推到公开仓库。**这是法律红线**：见 [CLAUDE.md](CLAUDE.md) 的"法律红线"段。
+所有这些路径都在根目录 `.gitignore` 里，确保不会误推到公开仓库。**这是法律红线**：
+
+- 反编译产物（`decompiled_dll/`、`raw_pck/`、`sts2.dll`、`0Harmony.dll`、`*.pck`）和 `sts2-reverse/` 整个目录 **绝对不上传到任何公开仓库**
+- 笔记 / 设计文档可以引用游戏的类名、方法签名、namespace 结构，但**不复制反编译方法体**
+- 编译 mod 需要的运行时依赖（`sts2.dll` / `0Harmony.dll`）必须由每个开发者从自己合法拥有的 STS2 副本中复制
 
 ### 2.2 软件版本
 
@@ -99,9 +103,7 @@ pip install anthropic
 ```
 STS2env/
 ├── README.md                          # ← 本文档
-├── CLAUDE.md                          # 给 AI 助手的项目纪律
 ├── STS2_GYM_DEV_PLAN.md               # 项目设计文档（north star）
-├── STS2_GYM_STRATEGY.md               # 对外推广策略
 ├── CODING_AGENT_BRIEF.md              # 给接手 coding agent 的速成手册
 ├── IMPLEMENTATION_NOTES.md            # 架构沉淀 + 调试 playbook（必读）
 ├── sts2-reverse/                      # ← gitignore，本地生成
@@ -1025,7 +1027,11 @@ c.leave_reward_screen(force=True)
 
 ### 17.7 不在公开仓库放反编译产物
 
-`decompiled_dll/` / `raw_pck/` / `sts2.dll` / `0Harmony.dll` 已 gitignore。**不要**让它们进 commit。详见 [CLAUDE.md](CLAUDE.md) 法律红线段。
+`decompiled_dll/` / `raw_pck/` / `sts2.dll` / `0Harmony.dll` / `sts2-reverse/` 整个目录已 gitignore。**不要**让它们进 commit。原则：
+
+- 不在公开仓库 / issue / PR / blog / Twitter 等任何公开渠道分享反编译源码片段
+- 笔记可以引用类名、方法签名、namespace 结构（如 `MegaCrit.Sts2.Core.Combat.CombatManager`），**不复制反编译方法体**
+- 描述游戏行为时用自己的话总结，不直接搬代码
 
 ---
 
@@ -1036,8 +1042,6 @@ c.leave_reward_screen(force=True)
 | [STS2_GYM_DEV_PLAN.md](STS2_GYM_DEV_PLAN.md) | 项目设计文档，§0-§11 是设计，§12 是实施进度跟踪 |
 | [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md) | 架构沉淀 + 已知 quirks + 调试 playbook + 加 phase checklist |
 | [CODING_AGENT_BRIEF.md](CODING_AGENT_BRIEF.md) | 给接手 coding agent 的速成手册 |
-| [CLAUDE.md](CLAUDE.md) | AI 助手纪律 + 法律红线 |
-| [STS2_GYM_STRATEGY.md](STS2_GYM_STRATEGY.md) | 对外推广策略（自留） |
 | [sts2-gym/README.md](sts2-gym/README.md) | 简版 quickstart（本文档是详细版） |
 
 ### 当前进度（截至 Day-14 收尾）
@@ -1061,7 +1065,7 @@ c.leave_reward_screen(force=True)
 - **本仓库代码**（mod 源码 + Python 包）默认 MIT 风格（你想加 LICENSE 就加）
 - **依赖**：编译需要本地 STS2 安装的 `sts2.dll` / `0Harmony.dll` —— 不分发
 - **运行**：需要每个用户自己有合法 STS2 副本
-- **反编译产物**：local-only，永不入公开仓库（CLAUDE.md 红线）
+- **反编译产物**：local-only，永不入公开仓库（见 §2.1 / §17.7 法律红线）
 
 ---
 

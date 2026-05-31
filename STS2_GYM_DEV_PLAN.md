@@ -179,7 +179,7 @@ SaveManager.Instance.PrefsSave.FastMode = FastModeType.Instant;
 3. **暴露 RNG state 给 Save/Restore**：`RunRngSet.ToSerializable()` / `FromSave(SerializableRunRngSet)` / `LoadFromSerializable(...)` 已现成；`PlayerRngSet` 同。`SerializableRun.SerializableRng` 字段一并打包 RunRngSet state，§2.1 (a) 路径自带
 
 **交付物**：`docs/rng_audit.md` 列：
-- 12 + 3 个流的用途表（侦察文档 [D_rng.md §1.1](sts2-reverse/docs/recon/D_rng.md) 已有）
+- 12 + 3 个流的用途表（侦察阶段已生成本地笔记 `sts2-reverse/docs/recon/D_rng.md` —— local-only）
 - 11 处 derived seed 的具体公式（每个 `new Rng(...)` 站点 + 输入参数）
 - 1 处 outlier 的处理方式
 - 验证策略：固定 seed 跑 1M 步 random policy，trajectory bit-exact
