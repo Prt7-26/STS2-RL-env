@@ -3,7 +3,93 @@
 > Gymnasium-style **RL / LLM** environment bridge for *Slay the Spire 2*.
 > 双一等公民设计：RL agent 和 LLM agent 共享同一套底层状态、同一份 reward、同一组 action 接口。
 
-Status: **P0 + P1 大部分完成**，全 run loop 跑通，速度 8 step/s (比起点 7-10×)，4 份 JSON Schema codegen 完成。详细进度见 [`STS2_GYM_DEV_PLAN.md §12`](STS2_GYM_DEV_PLAN.md)。
+Status: **P0 + P1 大部分完成**，全 run loop 跑通，速度 8 step/s (比起点 7-10×)，4 份 JSON Schema codegen 完成，24 种 action 全实现。详细进度见 [`STS2_GYM_DEV_PLAN.md §12`](STS2_GYM_DEV_PLAN.md)。
+
+---
+
+## 🤖 给 AI Coding Agent / 接手者的入门指南（必读，最快 5 分钟）
+
+> **如果你是一个 AI coding agent 被派来在此仓库上工作 —— 先读完这一节再动手。**
+
+### 0. 第一条规则：不要凭空写 spec / handoff
+
+这个仓库已经踩过一次坑：另一个 AI agent **没有读代码就写了一份 "missing features" 清单**，里面 11 项里 10 项早已实现，只有 1 项是真实 gap。它列了 11 个问题给我们的人类协作者回答，所有答案都在 [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md) 里。
+
+**永远先读，再写。** 任何"X 不存在 / X 缺失"的论断，**必须**先用具体路径 + grep 结果证伪：
+
+```bash
+# 例：声称 "/step 不支持 use_potion" 之前，先跑：
+grep -n '"use_potion"' sts2-gym/mod/StepRunner.cs
+grep -n "def use_potion" sts2-gym/py/sts2_gym/client.py
+# 如果两个都有 hit，那 use_potion 已经实现了，不要列入 "missing"
+```
+
+### 1. 必读顺序（≈ 15 分钟）
+
+1. **本 README §一-§三**（这一节 + 它能做什么 + 仓库结构）— 知道有什么
+2. **[IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md) §1-§5** — 架构 + 已知 quirks + 调试 playbook
+3. **[STS2_GYM_DEV_PLAN.md §12](STS2_GYM_DEV_PLAN.md)** — 当前实施进度，哪些 ✅ / ⚠️ / ❌
+4. **[CODING_AGENT_BRIEF.md](CODING_AGENT_BRIEF.md)** — 接手开发者速成（如果你的任务是写新功能，必读）
+5. **[sts2-gym/mod/StepRunner.cs](sts2-gym/mod/StepRunner.cs)** 的 dispatch switch — 24 个 action 的入口表
+
+### 2. "X 是不是存在 / 怎么做的"快速查询
+
+| 想知道什么 | grep 这个 |
+|---|---|
+| 某个 action 是否实现 | `grep '"<action_name>"' sts2-gym/mod/StepRunner.cs` |
+| 某个 HTTP endpoint | `grep 'case "/<path>"' sts2-gym/mod/HttpBridge.cs` |
+| 某个 Python API | `grep "def <method_name>" sts2-gym/py/sts2_gym/client.py` |
+| 某个游戏概念怎么暴露 | `grep -r "<ConceptName>" sts2-gym/mod/` |
+| 24 种 action 全列表 | [`sts2-gym/docs/schemas/action.schema.json`](sts2-gym/docs/schemas/action.schema.json)（自动生成，永远最新） |
+| /observe 的字段 schema | [`sts2-gym/docs/schemas/observation.schema.json`](sts2-gym/docs/schemas/observation.schema.json) |
+| 完整测试 | `cd sts2-gym/py && python -m sts2_gym.test_env_pure` （30 个纯函数测试，含 schema drift 检测） |
+
+### 3. 不变量 / 硬约束（违反 = bug）
+
+| 约束 | 后果 |
+|---|---|
+| `RunManager.Instance` / `CombatManager.Instance` 是 **per-process singleton** | 一个 OS 进程只能有一个 active run。VectorEnv = N 个 OS 进程 |
+| HTTP listener **单线程**，所有 `/step` 串行 | 任何 `/step` 死锁 → 后续所有请求 hang。详见 IMPLEMENTATION_NOTES §2.1"短 await 模式" |
+| `Sts2Gym.Selector` 触发的 backend call **不能 await 到底** | 触发 selector → backend 等 selector → /step 持锁等 backend → 死锁 |
+| HTTP handler 操作游戏状态**必须**走 `GameThread.RunOnMainAsync` | 不走 marshal 直接动 Godot 节点 = NRE / 数据竞争 |
+| 反编译产物 / `sts2-reverse/` **永远本地** | gitignore 已保护，但不要主动加 `git add` 强加 |
+| 笔记可引用类名 / 方法签名 / namespace 结构，**不复制反编译方法体** | 法律红线，见 §17.7 |
+
+### 4. Action / API 表（截至最新 commit）
+
+- **24 种 action types**：play_card / end_turn / select_pick / select_unpick / select_confirm / select_skip / choose_map_node / choose_event_option / take_reward_item / leave_reward_screen / card_reward_pick / relic_pick / bundle_pick / shop_buy / shop_leave / rest_choose / rest_leave / treasure_open / treasure_pick / treasure_leave / use_potion / discard_potion / proceed_after_game_over / noop
+- **13 个 HTTP endpoints**：见 §七
+- **14 种 phase**：main_menu / combat / combat_pending / card_select / card_reward_select / relic_select / bundle_select / map / event / reward / shop / rest / treasure / game_over / between_rooms
+- **9 个 cache-refresh 事件**：RunStarted / RoomEntered / RoomExited / CombatSetUp / CombatEnded / CombatWon / TurnStarted / TurnEnded / PlayerActionsDisabledChanged + 懒订阅 NOverlayStack.Changed
+- **3 个 Harmony patches**（修 vanilla Instant-mode bugs）：NCreature.AnimDie / NTransition.RoomFadeIn / TalkCmd.Play
+
+### 5. 怎么加新功能（推荐流程）
+
+1. 查 `STS2_GYM_DEV_PLAN.md §12.4`，确认这事还没做（或在 P1/P2 队列里）
+2. 查 `IMPLEMENTATION_NOTES.md §6` "加新 phase / 新 action 的 checklist"（10 步标准化流程）
+3. **先看 AutoSlay 的对应 Handler**（本地 `sts2-reverse/decompiled_dll/MegaCrit.Sts2.Core.AutoSlay.Handlers.*`）—— 官方点 UI 的正确流程
+4. mod side 改完跑 `dotnet build mod/Sts2Gym.csproj`
+5. Python side 改完跑 `python -m sts2_gym.gen_schemas`（如果加了 action）+ `python -m sts2_gym.test_env_pure`（30 个测试必须全过，schema drift test 会自动捕新 action 漏注册）
+6. `bash sts2-gym/scripts/smoke_test.sh --no-game` 部署
+7. 用户重启 STS2 + 跑 `python -m sts2_gym.full_run_agent --verbose` 验证
+
+### 6. 不要做的事
+
+- ❌ **不要凭空写 "X is missing" 清单** —— 先 grep
+- ❌ **不要把反编译代码 / `sts2-reverse/` 内容加进 commit** —— gitignore 保护，不要绕
+- ❌ **不要在 HTTP handler 里直接调 Godot 节点** —— 必须 marshal 到 main thread
+- ❌ **不要在 `/step` 里 await 触发 selector 的 backend call 到完成** —— 死锁
+- ❌ **不要修 STS2 源代码 / 反编译的 `.cs`** —— 那是参考，不是项目
+- ❌ **不要做"未授权的破坏性操作"**：`git push --force`、`git reset --hard`、`git rm` 用户的工作文件 —— 全部要先问
+
+### 7. 协作纪律（用户 lingchao726@gmail.com 的偏好）
+
+- 不确定就问，**不要自己拍板**
+- 不确定的事说"不确定"，不瞎猜
+- 每完成一个任务主动告知进度
+- 发现死胡同立刻说，不硬套
+- 不为漂亮结论省略不利发现
+- 写代码不写废注释，特别是不写 "what" 注释（命名已经说清楚了）和"用于 X 的旧调用方"这类会随时间腐烂的引用注释
 
 ---
 
@@ -16,7 +102,7 @@ Status: **P0 + P1 大部分完成**，全 run loop 跑通，速度 8 step/s (比
 - [五、第一次跑通](#五第一次跑通)
 - [六、Python API 速查](#六python-api-速查)
 - [七、HTTP 端点完整列表](#七http-端点完整列表)
-- [八、Action 空间（22 种）](#八action-空间22-种)
+- [八、Action 空间（24 种）](#八action-空间24-种)
 - [九、Observation 格式](#九observation-格式)
 - [十、Save / Restore](#十save--restore)
 - [十一、多实例 (VectorEnv)](#十一多实例-vectorenv)
@@ -40,7 +126,7 @@ Status: **P0 + P1 大部分完成**，全 run loop 跑通，速度 8 step/s (比
   - tensor (Dict spaces，给 RL 用)
   - 人类可读 text（给 LLM prose 模式用）
   - 人类可读 json（给 LLM tool-use 模式用）
-- **22 种结构化 action**（覆盖 12 个 phase 全部决策点，combat / map / event / reward / shop / rest / treasure / 各种 sub-screen）
+- **24 种结构化 action**（覆盖 12 个 phase 全部决策点，combat / map / event / reward / shop / rest / treasure / 各种 sub-screen）
 - **三向 action codec**：discrete int ↔ structured dict ↔ canonical text
 - **鲁棒 LLM action 解析器**：吃 LLM 的 reasoning prose + JSON tool-call，提取出可执行 action
 - **整 run 自动 driver** (`full_run_agent`)：从角色选择跑到死或赢
@@ -502,7 +588,7 @@ mod 默认监听 `127.0.0.1:7777`，可用 `STS2GYM_PORT` 环境变量覆盖。
 | `/version` | GET | 协议 + mod 版本 | 同上 |
 | `/observe` | GET (`?partial=1` / `?with_mask=1`) | 完整状态快照 | `HttpBridge.BuildObservation` |
 | `/action_mask` | GET | 当前合法 action 集 | `HttpBridge.BuildActionMask` |
-| `/step` | POST | 执行 action（22 种） | `StepRunner.HandleStep` |
+| `/step` | POST | 执行 action（24 种） | `StepRunner.HandleStep` |
 | `/reset` | POST | 重置到 Combat-level scenario | `ScenarioInjector.HandleReset` |
 | `/start_run` | POST | 开新 run | `RunStarter.HandleStartRunAsync` |
 | `/abandon_run` | POST | 强行结束当前 run | `HttpBridge` |
@@ -539,7 +625,7 @@ curl -X POST http://127.0.0.1:7777/abandon_run
 
 ---
 
-## 八、Action 空间（22 种）
+## 八、Action 空间（24 种）
 
 完整列表在 [`sts2-gym/docs/schemas/action.schema.json`](sts2-gym/docs/schemas/action.schema.json)（自动生成）。下面是分类速查：
 
@@ -818,7 +904,7 @@ python -m sts2_gym.gen_schemas --check   # CI: drift 检测，非零退出
 
 | 文件 | 内容 |
 |---|---|
-| [action.schema.json](sts2-gym/docs/schemas/action.schema.json) | 22 种 action type 的 oneOf union |
+| [action.schema.json](sts2-gym/docs/schemas/action.schema.json) | 24 种 action type 的 oneOf union |
 | [observation.schema.json](sts2-gym/docs/schemas/observation.schema.json) | `/observe` 顶层 shape + per-phase 子结构 |
 | [save_state.schema.json](sts2-gym/docs/schemas/save_state.schema.json) | `/save_run` / `/restore_run` envelope |
 | [scenario_spec.schema.json](sts2-gym/docs/schemas/scenario_spec.schema.json) | `/start_run` body |
