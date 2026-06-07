@@ -990,6 +990,129 @@ internal static class NonCombatHandlers
         return (200, "{\"ok\":true,\"action\":\"treasure_leave\"}");
     }
 
+    // -------------------------------------------------- potion (combat action)
+
+    /// <summary>
+    /// Day-15: use a potion. Mirrors PlayCardAsync's pre/post-conditions but
+    /// goes through PotionModel.EnqueueManualUse instead of card.TryManualPlay.
+    /// Targeted potions (Fire Potion → AnyEnemy, Block Potion → self) require
+    /// target_combat_id; untargeted (Energy Potion etc.) ignore it.
+    /// </summary>
+    public static async Task<(int, string)> UsePotionAsync(JsonElement cmd)
+    {
+        if (Sts2GymMod.Selector.IsActive)
+            return (409, "{\"ok\":false,\"error\":\"selector active — resolve via /step select_* first\"}");
+        if (!CombatManager.Instance.IsInProgress)
+            return (409, "{\"ok\":false,\"error\":\"not in combat\"}");
+        if (!CombatManager.Instance.IsPlayPhase)
+            return (409, "{\"ok\":false,\"error\":\"not in play phase\"}");
+
+        var combat = CombatManager.Instance.DebugOnlyGetState();
+        var player = combat?.Players.FirstOrDefault();
+        if (player == null) return (500, "{\"ok\":false,\"error\":\"no player in combat\"}");
+
+        if (!cmd.TryGetProperty("slot", out var slotProp) || slotProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'slot'\"}");
+        int slot = slotProp.GetInt32();
+
+        var slots = player.PotionSlots;
+        if (slot < 0 || slot >= slots.Count)
+            return (400, $"{{\"ok\":false,\"error\":\"slot out of range\",\"got\":{slot},\"max_slots\":{slots.Count}}}");
+
+        var potion = slots[slot];
+        if (potion == null)
+            return (409, $"{{\"ok\":false,\"error\":\"slot {slot} is empty\"}}");
+        if (potion.IsQueued)
+            return (409, "{\"ok\":false,\"error\":\"potion already queued for use\"}");
+
+        MegaCrit.Sts2.Core.Entities.Creatures.Creature? target = null;
+        if (cmd.TryGetProperty("target_combat_id", out var targetProp)
+            && targetProp.ValueKind == JsonValueKind.Number)
+        {
+            var targetId = (uint)targetProp.GetInt32();
+            target = combat!.Creatures.FirstOrDefault(c => c.CombatId == targetId);
+            if (target == null)
+                return (400, $"{{\"ok\":false,\"error\":\"target_combat_id not found\",\"target_combat_id\":{targetId}}}");
+        }
+
+        // Target sanity: targeted potions require target, untargeted ignore it.
+        // Same set as HttpBridge.RequiresTarget for cards.
+        bool requiresTarget = potion.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy
+                            || potion.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyAlly
+                            || potion.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyPlayer;
+        if (requiresTarget && target == null)
+            return (409, $"{{\"ok\":false,\"error\":\"potion requires a target\",\"target_type\":\"{potion.TargetType}\"}}");
+
+        int hpBefore = player.Creature.CurrentHp;
+        string potionId = potion.Id.Entry;
+        Log.Info($"{Tag} use_potion: slot={slot} id={potionId} target={target?.CombatId.ToString() ?? "none"}");
+
+        try { potion.EnqueueManualUse(target); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"EnqueueManualUse threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+
+        // Wait for the action queue to drain (matches PlayCardAsync's pattern,
+        // shorter timeout because potion effects rarely chain into selectors).
+        var aqs = RunManager.Instance.ActionQueueSet;
+        if (aqs != null)
+        {
+            try { await aqs.BecameEmpty().WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (TimeoutException) { /* best effort */ }
+        }
+
+        HttpBridge.RefreshObservation();
+
+        int hpAfter = player.Creature.CurrentHp;
+        return (200, $"{{\"ok\":true,\"action\":\"use_potion\",\"slot\":{slot},\"potion_id\":{JsonStr(potionId)}," +
+            (target != null ? $"\"target_combat_id\":{target.CombatId}," : "") +
+            $"\"hp_delta\":{hpAfter - hpBefore}," +
+            $"\"selector_active\":{(Sts2GymMod.Selector.IsActive ? "true" : "false")}}}");
+    }
+
+    /// <summary>
+    /// Day-15: discard a potion without using it. Synchronous on game side
+    /// (PotionModel.Discard → Owner.DiscardPotionInternal). Legal both in combat
+    /// and between rooms (potion-slot management).
+    /// </summary>
+    public static async Task<(int, string)> DiscardPotionAsync(JsonElement cmd)
+    {
+        var state = RunManager.Instance.DebugOnlyGetState();
+        var player = state?.Players.FirstOrDefault();
+        if (player == null) return (409, "{\"ok\":false,\"error\":\"no player in run\"}");
+
+        if (!cmd.TryGetProperty("slot", out var slotProp) || slotProp.ValueKind != JsonValueKind.Number)
+            return (400, "{\"ok\":false,\"error\":\"missing or non-int 'slot'\"}");
+        int slot = slotProp.GetInt32();
+
+        var slots = player.PotionSlots;
+        if (slot < 0 || slot >= slots.Count)
+            return (400, $"{{\"ok\":false,\"error\":\"slot out of range\",\"got\":{slot},\"max_slots\":{slots.Count}}}");
+
+        var potion = slots[slot];
+        if (potion == null)
+            return (409, $"{{\"ok\":false,\"error\":\"slot {slot} is empty\"}}");
+        if (potion.IsQueued)
+            return (409, "{\"ok\":false,\"error\":\"potion already queued for use; cannot discard\"}");
+        if (!player.CanRemovePotions)
+            return (409, "{\"ok\":false,\"error\":\"player.CanRemovePotions is false (e.g. some run-modifier blocks removal)\"}");
+
+        string potionId = potion.Id.Entry;
+        Log.Info($"{Tag} discard_potion: slot={slot} id={potionId}");
+
+        try { potion.Discard(); }
+        catch (Exception ex)
+        {
+            return (500, "{\"ok\":false,\"error\":\"Discard threw\",\"message\":" + JsonStr(ex.Message) + "}");
+        }
+
+        await FastDelay.Of(80);
+        HttpBridge.RefreshObservation();
+
+        return (200, $"{{\"ok\":true,\"action\":\"discard_potion\",\"slot\":{slot},\"potion_id\":{JsonStr(potionId)}}}");
+    }
+
     // -------------------------------------------------- helpers
 
     private static string JsonStr(string? s)

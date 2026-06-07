@@ -723,6 +723,8 @@ def test_schemas_codec_coverage():
         "treasure_open": {},
         "treasure_pick": {"idx": 0},
         "treasure_leave": {},
+        "use_potion": {"slot": 0},
+        "discard_potion": {"slot": 0},
         "shop_buy": {"entry_idx": 0},
         "shop_leave": {},
         "rest_choose": {"option_idx": 0},

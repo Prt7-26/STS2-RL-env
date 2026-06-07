@@ -247,6 +247,26 @@ class ModBridgeClient:
             payload["seed"] = seed
         return self._post_json("/start_run", payload, timeout=30.0)
 
+    def use_potion(self, slot: int, target_combat_id: int | None = None) -> dict[str, Any]:
+        """Day-15: drink a potion from slot 0..max_potion_slot_count-1.
+
+        ``target_combat_id`` is required when the potion's TargetType is
+        AnyEnemy / AnyAlly / AnyPlayer (e.g. Fire Potion → enemy).
+        Self-target potions (Block / Energy / Strength etc.) ignore it.
+        """
+        payload: dict[str, Any] = {"type": "use_potion", "slot": int(slot)}
+        if target_combat_id is not None:
+            payload["target_combat_id"] = int(target_combat_id)
+        return self._post_json("/step", payload, timeout=15.0)
+
+    def discard_potion(self, slot: int) -> dict[str, Any]:
+        """Day-15: throw away a potion without using it (e.g. to free a slot
+        for a reward). Legal in or out of combat. Errors with 409 if the
+        slot is empty, the potion is already queued, or the player has
+        ``CanRemovePotions=false``.
+        """
+        return self._post_json("/step", {"type": "discard_potion", "slot": int(slot)}, timeout=15.0)
+
     def treasure_open(self) -> dict[str, Any]:
         """Day-14: click the chest in a treasure room. No-op if already open."""
         return self._post_json("/step", {"type": "treasure_open"}, timeout=15.0)

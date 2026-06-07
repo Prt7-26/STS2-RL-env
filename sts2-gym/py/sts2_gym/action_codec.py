@@ -107,6 +107,14 @@ def to_text(action: dict[str, Any], context: dict[str, Any] | None = None) -> st
         return f"treasure pick {action.get('idx', '?')}"
     if t == "treasure_leave":
         return "treasure leave"
+    if t == "use_potion":
+        tgt = action.get("target_combat_id")
+        if tgt is not None:
+            letter = _enemy_letter_for(tgt, context) if context else None
+            return f"use potion {action.get('slot', '?')} on {letter or f'cid{tgt}'}"
+        return f"use potion {action.get('slot', '?')}"
+    if t == "discard_potion":
+        return f"discard potion {action.get('slot', '?')}"
     if t == "noop":
         return "noop"
     return f"<{t} {action}>"
@@ -186,6 +194,12 @@ _register(r"treasure\s+open", lambda m: {"type": "treasure_open"})
 _register(r"treasure\s+leave", lambda m: {"type": "treasure_leave"})
 _register(r"treasure\s+pick\s+(?P<i>\d+)",
           lambda m: {"type": "treasure_pick", "idx": int(m["i"])})
+_register(r"use\s+potion\s+(?P<s>\d+)\s+on\s+(?P<tgt>[A-Za-z0-9]+)",
+          lambda m: {"type": "use_potion", "slot": int(m["s"]), "_tgt": m["tgt"].strip()})
+_register(r"use\s+potion\s+(?P<s>\d+)",
+          lambda m: {"type": "use_potion", "slot": int(m["s"])})
+_register(r"discard\s+potion\s+(?P<s>\d+)",
+          lambda m: {"type": "discard_potion", "slot": int(m["s"])})
 _register(r"noop", lambda m: {"type": "noop"})
 
 
@@ -209,8 +223,31 @@ def from_text(text: str, context: dict[str, Any] | None = None) -> dict[str, Any
             action = build(m)
             if action.get("type") == "play_card" and context:
                 action = _resolve_play_card(action, context)
+            elif action.get("type") == "use_potion" and "_tgt" in action and context:
+                action = _resolve_potion_target(action, context)
             return action
     raise ParseError(f"could not parse {text!r} into a canonical action")
+
+
+def _resolve_potion_target(action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Resolve _tgt letter -> target_combat_id for use_potion."""
+    tgt_letter = action.pop("_tgt", None)
+    if tgt_letter is None:
+        return action
+    creatures = (context.get("combat") or {}).get("creatures") or []
+    enemies = sorted(
+        [c for c in creatures if not c.get("is_player") and c.get("is_hittable")],
+        key=lambda c: c.get("combat_id") or 0,
+    )
+    if len(tgt_letter) == 1 and tgt_letter.isalpha():
+        slot = ord(tgt_letter.upper()) - ord("A")
+        if 0 <= slot < len(enemies):
+            action["target_combat_id"] = enemies[slot].get("combat_id")
+        else:
+            raise ParseError(f"no enemy at slot {tgt_letter!r} (have {len(enemies)} hittable)")
+    else:
+        raise ParseError(f"potion target must be a single letter A/B/..., got {tgt_letter!r}")
+    return action
 
 
 def _resolve_play_card(action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

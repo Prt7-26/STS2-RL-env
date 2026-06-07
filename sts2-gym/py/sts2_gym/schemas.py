@@ -179,6 +179,25 @@ ACTION_TYPE_SCHEMAS: dict[str, dict[str, Any]] = {
         "required": ["type"],
         "additionalProperties": False,
     },
+    "use_potion": {
+        "description": "Drink a potion from slot 0..max_potion_slot_count-1. Combat phase only. Targeted potions (TargetType ∈ {AnyEnemy, AnyAlly, AnyPlayer}) require target_combat_id; self-target potions ignore it.",
+        "properties": {
+            "type": {"const": "use_potion"},
+            "slot": {"type": "integer", "minimum": 0, "description": "0-based index into players[0].potions"},
+            "target_combat_id": {"type": "integer", "minimum": 0, "description": "Required for targeted potions (e.g. Fire Potion → enemy); ignored for self-target."},
+        },
+        "required": ["type", "slot"],
+        "additionalProperties": False,
+    },
+    "discard_potion": {
+        "description": "Throw away a potion without using it. Legal in or out of combat. 409 if slot empty / potion already queued / player.CanRemovePotions=false.",
+        "properties": {
+            "type": {"const": "discard_potion"},
+            "slot": {"type": "integer", "minimum": 0},
+        },
+        "required": ["type", "slot"],
+        "additionalProperties": False,
+    },
     "shop_buy": {
         "description": "Buy item entry_idx from the merchant. Flat-indexed across CardEntries + RelicEntries + PotionEntries + CardRemovalEntry.",
         "properties": {

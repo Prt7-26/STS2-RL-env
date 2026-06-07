@@ -119,6 +119,9 @@ internal static class StepRunner
             "treasure_open" => await NonCombatHandlers.TreasureOpenAsync(),
             "treasure_pick" => await NonCombatHandlers.TreasurePickAsync(cmd),
             "treasure_leave" => await NonCombatHandlers.TreasureLeaveAsync(),
+            // Day-15: potions (combat-time consumables).
+            "use_potion" => await NonCombatHandlers.UsePotionAsync(cmd),
+            "discard_potion" => await NonCombatHandlers.DiscardPotionAsync(cmd),
             "noop" => (200, "{\"ok\":true,\"action\":\"noop\"}"),
             _ => (400, "{\"ok\":false,\"error\":\"unknown action type\",\"type\":" + JsonStr(type ?? "") + "}"),
         };
