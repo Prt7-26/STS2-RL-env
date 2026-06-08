@@ -324,6 +324,14 @@ side without updating the schemas trips the test.
 
 ---
 
+## Downstream RL contract
+
+The Stage-1 RL consumer's requested contract for target-aware card damage/block
+previews and enemy intent values is documented in
+[`docs/RL_CARD_VALUE_CONTRACT.md`](docs/RL_CARD_VALUE_CONTRACT.md).
+
+---
+
 ## Architecture
 
 - **Mod** ([`mod/`](mod/)) — C# class library, `[ModInitializer]` entry, runs inside the game process. HTTP listener single-threaded; all game-thread work marshalled via `GameThread.RunOnMainAsync`.
